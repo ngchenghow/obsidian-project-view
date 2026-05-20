@@ -78,12 +78,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
     );
-    this.registerEvent(
-      this.app.workspace.on(
-        "active-leaf-change",
-        () => this.saveActiveProjectTabs()
-      )
-    );
     this.app.workspace.onLayoutReady(() => this.activateListView());
   }
   async persist() {
@@ -154,23 +148,11 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     for (const leaf of existing)
       leaf.detach();
     const files = project.lastOpenNotes.map((p) => this.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian.TFile);
-    console.log(
-      `[RecentView] opening "${project.name}": saved`,
-      project.lastOpenNotes,
-      `-> resolved ${files.length} file(s)`
-    );
-    new import_obsidian.Notice(
-      `RecentView: restoring ${files.length}/${project.lastOpenNotes.length} tab(s)`
-    );
-    if (files.length > 0) {
-      const firstLeaf = this.app.workspace.getLeaf(false);
-      await firstLeaf.openFile(files[0]);
-      const group = firstLeaf.parent;
-      for (let i = 1; i < files.length; i++) {
-        const leaf = this.app.workspace.createLeafInParent(group, i);
-        await leaf.openFile(files[i]);
-      }
-      this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
+    let first = true;
+    for (const file of files) {
+      const leaf = this.app.workspace.getLeaf(first ? false : "tab");
+      await leaf.openFile(file);
+      first = false;
     }
     await this.persist();
     window.setTimeout(() => {
@@ -193,10 +175,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
     project.lastOpenNotes = open;
     void this.persist();
-    console.log(
-      `[RecentView] saved ${open.length} tab(s) to "${project.name}"`,
-      open
-    );
     return open.length;
   }
   async deleteProject(project) {

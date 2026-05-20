@@ -8,7 +8,6 @@ import {
   TFolder,
   Vault,
   WorkspaceLeaf,
-  WorkspaceSplit,
   FuzzySuggestModal,
   setIcon,
   App,
@@ -86,14 +85,10 @@ export default class RecentViewPlugin extends Plugin {
       },
     });
 
-    // Track tabs of the active project as the layout/active tab changes.
+    // Track the active project's open tabs as the layout changes (tabs being
+    // opened, closed or moved all fire layout-change).
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
-    );
-    this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () =>
-        this.saveActiveProjectTabs()
-      )
     );
 
     this.app.workspace.onLayoutReady(() => this.activateListView());
@@ -179,33 +174,19 @@ export default class RecentViewPlugin extends Plugin {
     });
     for (const leaf of existing) leaf.detach();
 
-    // Restore the project's notes as tabs inside one shared tab group.
+    // Restore the project's notes as tabs in one shared tab group.
     const files = project.lastOpenNotes
       .map((p) => this.app.vault.getAbstractFileByPath(p))
       .filter((f): f is TFile => f instanceof TFile);
 
-    console.log(
-      `[RecentView] opening "${project.name}": saved`,
-      project.lastOpenNotes,
-      `-> resolved ${files.length} file(s)`
-    );
-    new Notice(
-      `RecentView: restoring ${files.length}/${project.lastOpenNotes.length} tab(s)`
-    );
-
-    if (files.length > 0) {
-      // Use getLeaf(false) for the first note: after detaching every leaf the
-      // root split has no tab group, and getLeaf("tab") throws "No tab group
-      // found". getLeaf(false) creates one safely. The rest become siblings of
-      // that leaf so they share its tab group instead of opening as splits.
-      const firstLeaf = this.app.workspace.getLeaf(false);
-      await firstLeaf.openFile(files[0]);
-      const group = firstLeaf.parent as unknown as WorkspaceSplit;
-      for (let i = 1; i < files.length; i++) {
-        const leaf = this.app.workspace.createLeafInParent(group, i);
-        await leaf.openFile(files[i]);
-      }
-      this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
+    // First note: getLeaf(false) creates a tab group (the root split has none
+    // after detaching everything, so getLeaf("tab") would throw). Each later
+    // note uses getLeaf("tab"), which now appends to that group as a tab.
+    let first = true;
+    for (const file of files) {
+      const leaf = this.app.workspace.getLeaf(first ? false : "tab");
+      await leaf.openFile(file);
+      first = false;
     }
 
     await this.persist();
@@ -233,10 +214,6 @@ export default class RecentViewPlugin extends Plugin {
     });
     project.lastOpenNotes = open;
     void this.persist();
-    console.log(
-      `[RecentView] saved ${open.length} tab(s) to "${project.name}"`,
-      open
-    );
     return open.length;
   }
 
