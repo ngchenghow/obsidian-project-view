@@ -72,9 +72,28 @@ export default class RecentViewPlugin extends Plugin {
       callback: () => new ProjectEditModal(this.app, this, null).open(),
     });
 
-    // Track tabs of the active project as the layout changes.
+    this.addCommand({
+      id: "save-current-tabs",
+      name: "Save current tabs to active project",
+      callback: () => {
+        const n = this.saveActiveProjectTabs(true);
+        const p = this.getActiveProject();
+        new Notice(
+          p
+            ? `RecentView: saved ${n} tab(s) to "${p.name}"`
+            : "RecentView: no active project"
+        );
+      },
+    });
+
+    // Track tabs of the active project as the layout/active tab changes.
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () =>
+        this.saveActiveProjectTabs()
+      )
     );
 
     this.app.workspace.onLayoutReady(() => this.activateListView());
@@ -165,6 +184,15 @@ export default class RecentViewPlugin extends Plugin {
       .map((p) => this.app.vault.getAbstractFileByPath(p))
       .filter((f): f is TFile => f instanceof TFile);
 
+    console.log(
+      `[RecentView] opening "${project.name}": saved`,
+      project.lastOpenNotes,
+      `-> resolved ${files.length} file(s)`
+    );
+    new Notice(
+      `RecentView: restoring ${files.length}/${project.lastOpenNotes.length} tab(s)`
+    );
+
     if (files.length > 0) {
       const firstLeaf = this.app.workspace.getLeaf("tab");
       await firstLeaf.openFile(files[0]);
@@ -187,10 +215,10 @@ export default class RecentViewPlugin extends Plugin {
     }, 150);
   }
 
-  saveActiveProjectTabs(): void {
-    if (this.isActivating) return;
+  saveActiveProjectTabs(force = false): number {
+    if (this.isActivating && !force) return -1;
     const project = this.getActiveProject();
-    if (!project) return;
+    if (!project) return -1;
     const open: string[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       // Read the file path from the view state rather than leaf.view.file:
@@ -203,6 +231,11 @@ export default class RecentViewPlugin extends Plugin {
     });
     project.lastOpenNotes = open;
     void this.persist();
+    console.log(
+      `[RecentView] saved ${open.length} tab(s) to "${project.name}"`,
+      open
+    );
+    return open.length;
   }
 
   async deleteProject(project: Project): Promise<void> {

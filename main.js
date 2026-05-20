@@ -64,8 +64,25 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       name: "Create new project",
       callback: () => new ProjectEditModal(this.app, this, null).open()
     });
+    this.addCommand({
+      id: "save-current-tabs",
+      name: "Save current tabs to active project",
+      callback: () => {
+        const n = this.saveActiveProjectTabs(true);
+        const p = this.getActiveProject();
+        new import_obsidian.Notice(
+          p ? `RecentView: saved ${n} tab(s) to "${p.name}"` : "RecentView: no active project"
+        );
+      }
+    });
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
+    );
+    this.registerEvent(
+      this.app.workspace.on(
+        "active-leaf-change",
+        () => this.saveActiveProjectTabs()
+      )
     );
     this.app.workspace.onLayoutReady(() => this.activateListView());
   }
@@ -137,6 +154,14 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     for (const leaf of existing)
       leaf.detach();
     const files = project.lastOpenNotes.map((p) => this.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian.TFile);
+    console.log(
+      `[RecentView] opening "${project.name}": saved`,
+      project.lastOpenNotes,
+      `-> resolved ${files.length} file(s)`
+    );
+    new import_obsidian.Notice(
+      `RecentView: restoring ${files.length}/${project.lastOpenNotes.length} tab(s)`
+    );
     if (files.length > 0) {
       const firstLeaf = this.app.workspace.getLeaf("tab");
       await firstLeaf.openFile(files[0]);
@@ -152,12 +177,12 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       this.isActivating = false;
     }, 150);
   }
-  saveActiveProjectTabs() {
-    if (this.isActivating)
-      return;
+  saveActiveProjectTabs(force = false) {
+    if (this.isActivating && !force)
+      return -1;
     const project = this.getActiveProject();
     if (!project)
-      return;
+      return -1;
     const open = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       var _a;
@@ -168,6 +193,11 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
     project.lastOpenNotes = open;
     void this.persist();
+    console.log(
+      `[RecentView] saved ${open.length} tab(s) to "${project.name}"`,
+      open
+    );
+    return open.length;
   }
   async deleteProject(project) {
     this.data.projects = this.data.projects.filter((p) => p.id !== project.id);
