@@ -26,24 +26,51 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 var VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
-var DEFAULT_DATA = {
-  projects: [],
-  activeProjectId: null
+var DEFAULT_SETTINGS = {
+  dataNotePath: "RecentView.md"
 };
+var DATA_NOTE_HEADER = "# Recent View data\n\nThis note is managed by the **Recent View** plugin and stores this vault's projects. Avoid editing the JSON block below by hand.";
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function buildDataNote(data) {
+  return `${DATA_NOTE_HEADER}
+
+\`\`\`json
+${JSON.stringify(
+    data,
+    null,
+    2
+  )}
+\`\`\`
+`;
+}
+function parseDataNote(content) {
+  var _a, _b;
+  const match = content.match(/```json\s*([\s\S]*?)```/);
+  if (!match)
+    return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return {
+      projects: (_a = parsed.projects) != null ? _a : [],
+      activeProjectId: (_b = parsed.activeProjectId) != null ? _b : null
+    };
+  } catch (e) {
+    return null;
+  }
 }
 var RecentViewPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
-    this.data = DEFAULT_DATA;
+    this.data = { projects: [], activeProjectId: null };
+    this.settings = { ...DEFAULT_SETTINGS };
     this.isActivating = false;
+    this.noteWriteTimer = null;
   }
   async onload() {
-    this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
-    for (const project of this.data.projects) {
-      project.lastOpenNotes = project.lastOpenNotes.map((n) => typeof n === "string" ? { path: n } : n);
-    }
+    await this.loadAll();
+    this.addSettingTab(new RecentViewSettingTab(this.app, this));
     this.registerView(
       VIEW_TYPE_PROJECT_LIST,
       (leaf) => new ProjectListView(leaf, this)
@@ -83,8 +110,88 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     );
     this.app.workspace.onLayoutReady(() => this.activateListView());
   }
+  onunload() {
+    if (this.noteWriteTimer !== null) {
+      window.clearTimeout(this.noteWriteTimer);
+      this.noteWriteTimer = null;
+      void this.writeDataNote();
+    }
+  }
+  /**
+   * Load settings (from the plugin's data.json) and project data (from the
+   * note inside the vault). Falls back to migrating legacy project data that
+   * older versions stored in data.json.
+   */
+  async loadAll() {
+    var _a, _b, _c;
+    const stored = (_a = await this.loadData()) != null ? _a : {};
+    this.settings = {
+      dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath
+    };
+    const fromNote = await this.readDataNote();
+    if (fromNote) {
+      this.data = fromNote;
+    } else if (stored.projects) {
+      this.data = {
+        projects: stored.projects,
+        activeProjectId: (_b = stored.activeProjectId) != null ? _b : null
+      };
+      await this.writeDataNote();
+    } else {
+      this.data = { projects: [], activeProjectId: null };
+    }
+    for (const project of this.data.projects) {
+      project.lastOpenNotes = ((_c = project.lastOpenNotes) != null ? _c : []).map((n) => typeof n === "string" ? { path: n } : n);
+    }
+  }
+  async readDataNote() {
+    const path = this.settings.dataNotePath;
+    const adapter = this.app.vault.adapter;
+    if (!path || !await adapter.exists(path))
+      return null;
+    try {
+      return parseDataNote(await adapter.read(path));
+    } catch (e) {
+      return null;
+    }
+  }
+  async writeDataNote() {
+    const path = this.settings.dataNotePath;
+    if (!path)
+      return;
+    const adapter = this.app.vault.adapter;
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      const dir = path.slice(0, slash);
+      if (!await adapter.exists(dir))
+        await adapter.mkdir(dir);
+    }
+    await adapter.write(path, buildDataNote(this.data));
+  }
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+  /**
+   * Persist settings immediately and schedule a debounced write of the project
+   * data note (avoids hammering the vault/sync on every layout change).
+   */
   async persist() {
-    await this.saveData(this.data);
+    await this.saveSettings();
+    if (this.noteWriteTimer !== null)
+      window.clearTimeout(this.noteWriteTimer);
+    this.noteWriteTimer = window.setTimeout(() => {
+      this.noteWriteTimer = null;
+      void this.writeDataNote();
+    }, 600);
+  }
+  /** Persist immediately, used for infrequent but important edits. */
+  async persistNow() {
+    if (this.noteWriteTimer !== null) {
+      window.clearTimeout(this.noteWriteTimer);
+      this.noteWriteTimer = null;
+    }
+    await this.saveSettings();
+    await this.writeDataNote();
   }
   getActiveProject() {
     var _a;
@@ -214,7 +321,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     if (this.data.activeProjectId === project.id) {
       this.data.activeProjectId = null;
     }
-    await this.persist();
+    await this.persistNow();
     this.refreshListView();
     this.refreshContentView();
   }
@@ -470,7 +577,7 @@ var ProjectEditModal = class extends import_obsidian.Modal {
         lastOpenNotes: []
       });
     }
-    await this.plugin.persist();
+    await this.plugin.persistNow();
     this.plugin.refreshListView();
     this.plugin.refreshContentView();
     this.close();
@@ -530,5 +637,26 @@ var ConfirmModal = class extends import_obsidian.Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
+  }
+};
+var RecentViewSettingTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    new import_obsidian.Setting(containerEl).setName("Data note path").setDesc(
+      "Vault-relative path of the note that stores this vault's projects. Stored inside the vault so the data is per-vault and travels with it."
+    ).addText(
+      (text) => text.setPlaceholder(DEFAULT_SETTINGS.dataNotePath).setValue(this.plugin.settings.dataNotePath).onChange(async (value) => {
+        const next = value.trim() || DEFAULT_SETTINGS.dataNotePath;
+        if (next === this.plugin.settings.dataNotePath)
+          return;
+        this.plugin.settings.dataNotePath = next;
+        await this.plugin.persistNow();
+      })
+    );
   }
 };

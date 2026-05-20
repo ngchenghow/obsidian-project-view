@@ -3,6 +3,7 @@ import {
   Modal,
   Notice,
   Plugin,
+  PluginSettingTab,
   Setting,
   TFile,
   TFolder,
@@ -39,28 +40,57 @@ interface RecentViewData {
   activeProjectId: string | null;
 }
 
-const DEFAULT_DATA: RecentViewData = {
-  projects: [],
-  activeProjectId: null,
+interface RecentViewSettings {
+  // Vault-relative path of the note that stores this vault's project data.
+  dataNotePath: string;
+}
+
+const DEFAULT_SETTINGS: RecentViewSettings = {
+  dataNotePath: "RecentView.md",
 };
+
+// Header written above the JSON block so the note is self-explanatory.
+const DATA_NOTE_HEADER =
+  "# Recent View data\n\n" +
+  "This note is managed by the **Recent View** plugin and stores this " +
+  "vault's projects. Avoid editing the JSON block below by hand.";
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+function buildDataNote(data: RecentViewData): string {
+  return `${DATA_NOTE_HEADER}\n\n\`\`\`json\n${JSON.stringify(
+    data,
+    null,
+    2
+  )}\n\`\`\`\n`;
+}
+
+function parseDataNote(content: string): RecentViewData | null {
+  const match = content.match(/```json\s*([\s\S]*?)```/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]) as Partial<RecentViewData>;
+    return {
+      projects: parsed.projects ?? [],
+      activeProjectId: parsed.activeProjectId ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default class RecentViewPlugin extends Plugin {
-  data: RecentViewData = DEFAULT_DATA;
+  data: RecentViewData = { projects: [], activeProjectId: null };
+  settings: RecentViewSettings = { ...DEFAULT_SETTINGS };
   private isActivating = false;
+  private noteWriteTimer: number | null = null;
 
   async onload(): Promise<void> {
-    this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
+    await this.loadAll();
 
-    // Migrate lastOpenNotes from the old string[] format to OpenNote[].
-    for (const project of this.data.projects) {
-      project.lastOpenNotes = (
-        project.lastOpenNotes as unknown as (string | OpenNote)[]
-      ).map((n) => (typeof n === "string" ? { path: n } : n));
-    }
+    this.addSettingTab(new RecentViewSettingTab(this.app, this));
 
     this.registerView(
       VIEW_TYPE_PROJECT_LIST,
@@ -110,8 +140,99 @@ export default class RecentViewPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.activateListView());
   }
 
+  onunload(): void {
+    // Flush any debounced note write so nothing is lost on disable/close.
+    if (this.noteWriteTimer !== null) {
+      window.clearTimeout(this.noteWriteTimer);
+      this.noteWriteTimer = null;
+      void this.writeDataNote();
+    }
+  }
+
+  /**
+   * Load settings (from the plugin's data.json) and project data (from the
+   * note inside the vault). Falls back to migrating legacy project data that
+   * older versions stored in data.json.
+   */
+  async loadAll(): Promise<void> {
+    const stored = ((await this.loadData()) ?? {}) as Partial<
+      RecentViewSettings & RecentViewData
+    >;
+    this.settings = {
+      dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath,
+    };
+
+    const fromNote = await this.readDataNote();
+    if (fromNote) {
+      this.data = fromNote;
+    } else if (stored.projects) {
+      // Migrate project data that used to live in data.json into the note.
+      this.data = {
+        projects: stored.projects,
+        activeProjectId: stored.activeProjectId ?? null,
+      };
+      await this.writeDataNote();
+    } else {
+      this.data = { projects: [], activeProjectId: null };
+    }
+
+    // Migrate lastOpenNotes from the old string[] format to OpenNote[].
+    for (const project of this.data.projects) {
+      project.lastOpenNotes = (
+        (project.lastOpenNotes ?? []) as unknown as (string | OpenNote)[]
+      ).map((n) => (typeof n === "string" ? { path: n } : n));
+    }
+  }
+
+  async readDataNote(): Promise<RecentViewData | null> {
+    const path = this.settings.dataNotePath;
+    const adapter = this.app.vault.adapter;
+    if (!path || !(await adapter.exists(path))) return null;
+    try {
+      return parseDataNote(await adapter.read(path));
+    } catch {
+      return null;
+    }
+  }
+
+  async writeDataNote(): Promise<void> {
+    const path = this.settings.dataNotePath;
+    if (!path) return;
+    const adapter = this.app.vault.adapter;
+    // Ensure the parent folder exists for nested paths.
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      const dir = path.slice(0, slash);
+      if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+    }
+    await adapter.write(path, buildDataNote(this.data));
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  /**
+   * Persist settings immediately and schedule a debounced write of the project
+   * data note (avoids hammering the vault/sync on every layout change).
+   */
   async persist(): Promise<void> {
-    await this.saveData(this.data);
+    await this.saveSettings();
+    if (this.noteWriteTimer !== null) window.clearTimeout(this.noteWriteTimer);
+    this.noteWriteTimer = window.setTimeout(() => {
+      this.noteWriteTimer = null;
+      void this.writeDataNote();
+    }, 600);
+  }
+
+  /** Persist immediately, used for infrequent but important edits. */
+  async persistNow(): Promise<void> {
+    if (this.noteWriteTimer !== null) {
+      window.clearTimeout(this.noteWriteTimer);
+      this.noteWriteTimer = null;
+    }
+    await this.saveSettings();
+    await this.writeDataNote();
   }
 
   getActiveProject(): Project | null {
@@ -275,7 +396,7 @@ export default class RecentViewPlugin extends Plugin {
     if (this.data.activeProjectId === project.id) {
       this.data.activeProjectId = null;
     }
-    await this.persist();
+    await this.persistNow();
     this.refreshListView();
     this.refreshContentView();
   }
@@ -590,7 +711,7 @@ class ProjectEditModal extends Modal {
         lastOpenNotes: [],
       });
     }
-    await this.plugin.persist();
+    await this.plugin.persistNow();
     this.plugin.refreshListView();
     this.plugin.refreshContentView();
     this.close();
@@ -666,5 +787,38 @@ class ConfirmModal extends Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
+  }
+}
+
+class RecentViewSettingTab extends PluginSettingTab {
+  plugin: RecentViewPlugin;
+
+  constructor(app: App, plugin: RecentViewPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Data note path")
+      .setDesc(
+        "Vault-relative path of the note that stores this vault's projects. " +
+          "Stored inside the vault so the data is per-vault and travels with it."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.dataNotePath)
+          .setValue(this.plugin.settings.dataNotePath)
+          .onChange(async (value) => {
+            const next = value.trim() || DEFAULT_SETTINGS.dataNotePath;
+            if (next === this.plugin.settings.dataNotePath) return;
+            this.plugin.settings.dataNotePath = next;
+            // Write the current data to the new location immediately.
+            await this.plugin.persistNow();
+          })
+      );
   }
 }
