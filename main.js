@@ -163,7 +163,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       `RecentView: restoring ${files.length}/${project.lastOpenNotes.length} tab(s)`
     );
     if (files.length > 0) {
-      const firstLeaf = this.app.workspace.getLeaf("tab");
+      const firstLeaf = this.app.workspace.getLeaf(false);
       await firstLeaf.openFile(files[0]);
       const group = firstLeaf.parent;
       for (let i = 1; i < files.length; i++) {

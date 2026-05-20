@@ -194,10 +194,12 @@ export default class RecentViewPlugin extends Plugin {
     );
 
     if (files.length > 0) {
-      const firstLeaf = this.app.workspace.getLeaf("tab");
+      // Use getLeaf(false) for the first note: after detaching every leaf the
+      // root split has no tab group, and getLeaf("tab") throws "No tab group
+      // found". getLeaf(false) creates one safely. The rest become siblings of
+      // that leaf so they share its tab group instead of opening as splits.
+      const firstLeaf = this.app.workspace.getLeaf(false);
       await firstLeaf.openFile(files[0]);
-      // All remaining notes are added as siblings of the first leaf so they
-      // share its tab group instead of opening as splits.
       const group = firstLeaf.parent as unknown as WorkspaceSplit;
       for (let i = 1; i < files.length; i++) {
         const leaf = this.app.workspace.createLeafInParent(group, i);
