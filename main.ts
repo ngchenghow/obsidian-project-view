@@ -147,8 +147,12 @@ export default class RecentViewPlugin extends Plugin {
     this.data.activeProjectId = project.id;
 
     // Close every leaf (tab or split) currently in the main area.
+    // Note: iterateRootLeaves stops as soon as the callback returns a truthy
+    // value, so the body must not return one (Array.push returns a number).
     const existing: WorkspaceLeaf[] = [];
-    this.app.workspace.iterateRootLeaves((leaf) => existing.push(leaf));
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      existing.push(leaf);
+    });
     for (const leaf of existing) leaf.detach();
 
     // Restore the project's notes as tabs inside one shared tab group.

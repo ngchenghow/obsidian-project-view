@@ -127,7 +127,9 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.isActivating = true;
     this.data.activeProjectId = project.id;
     const existing = [];
-    this.app.workspace.iterateRootLeaves((leaf) => existing.push(leaf));
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      existing.push(leaf);
+    });
     for (const leaf of existing)
       leaf.detach();
     const files = project.lastOpenNotes.map((p) => this.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian.TFile);
