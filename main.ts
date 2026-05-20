@@ -16,13 +16,20 @@ import {
 const VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 const VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
 
+interface OpenNote {
+  path: string;
+  // Ephemeral view state (scroll position, cursor) captured when the project
+  // was last active, so reopening restores where the user left off.
+  eState?: Record<string, unknown>;
+}
+
 interface Project {
   id: string;
   name: string;
   description: string;
   folders: string[];
   notes: string[];
-  lastOpenNotes: string[];
+  lastOpenNotes: OpenNote[];
 }
 
 interface RecentViewData {
@@ -45,6 +52,13 @@ export default class RecentViewPlugin extends Plugin {
 
   async onload(): Promise<void> {
     this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
+
+    // Migrate lastOpenNotes from the old string[] format to OpenNote[].
+    for (const project of this.data.projects) {
+      project.lastOpenNotes = (
+        project.lastOpenNotes as unknown as (string | OpenNote)[]
+      ).map((n) => (typeof n === "string" ? { path: n } : n));
+    }
 
     this.registerView(
       VIEW_TYPE_PROJECT_LIST,
@@ -173,11 +187,16 @@ export default class RecentViewPlugin extends Plugin {
       existing.push(leaf);
     });
 
-    const files = project.lastOpenNotes
-      .map((p) => this.app.vault.getAbstractFileByPath(p))
-      .filter((f): f is TFile => f instanceof TFile);
+    const notes = project.lastOpenNotes
+      .map((n) => ({
+        file: this.app.vault.getAbstractFileByPath(n.path),
+        eState: n.eState,
+      }))
+      .filter((n): n is { file: TFile; eState?: Record<string, unknown> } =>
+        n.file instanceof TFile
+      );
 
-    if (files.length === 0) {
+    if (notes.length === 0) {
       // No notes to restore: close every tab.
       for (const leaf of existing) leaf.detach();
     } else {
@@ -186,13 +205,16 @@ export default class RecentViewPlugin extends Plugin {
       // root split with no tab-group wrapper, which makes getLeaf("tab") open
       // splits instead of tabs. Reusing an existing leaf guarantees the
       // wrapper, so each getLeaf("tab") appends a real tab to the same group.
+      // The saved eState restores each note's scroll position and cursor.
       const target = existing[0] ?? this.app.workspace.getLeaf(false);
       for (const leaf of existing) {
         if (leaf !== target) leaf.detach();
       }
-      await target.openFile(files[0]);
-      for (let i = 1; i < files.length; i++) {
-        await this.app.workspace.getLeaf("tab").openFile(files[i]);
+      await target.openFile(notes[0].file, { eState: notes[0].eState });
+      for (let i = 1; i < notes.length; i++) {
+        await this.app.workspace
+          .getLeaf("tab")
+          .openFile(notes[i].file, { eState: notes[i].eState });
       }
       this.app.workspace.setActiveLeaf(target, { focus: false });
     }
@@ -210,14 +232,14 @@ export default class RecentViewPlugin extends Plugin {
     if (this.isActivating && !force) return -1;
     const project = this.getActiveProject();
     if (!project) return -1;
-    const open: string[] = [];
+    const open: OpenNote[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       // Read the file path from the view state rather than leaf.view.file:
       // background tabs are deferred in Obsidian 1.7+, so their view has no
       // .file until activated, but getViewState().state.file is always set.
       const filePath = leaf.getViewState().state?.file;
-      if (typeof filePath === "string" && !open.includes(filePath)) {
-        open.push(filePath);
+      if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
+        open.push({ path: filePath, eState: leaf.getEphemeralState() });
       }
     });
     project.lastOpenNotes = open;
