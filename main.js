@@ -160,9 +160,10 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       return;
     const open = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
-      const file = leaf.view.file;
-      if (file instanceof import_obsidian.TFile && !open.includes(file.path)) {
-        open.push(file.path);
+      var _a;
+      const filePath = (_a = leaf.getViewState().state) == null ? void 0 : _a.file;
+      if (typeof filePath === "string" && !open.includes(filePath)) {
+        open.push(filePath);
       }
     });
     project.lastOpenNotes = open;

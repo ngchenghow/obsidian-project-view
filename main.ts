@@ -193,9 +193,12 @@ export default class RecentViewPlugin extends Plugin {
     if (!project) return;
     const open: string[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
-      const file = (leaf.view as Partial<{ file: TFile }>).file;
-      if (file instanceof TFile && !open.includes(file.path)) {
-        open.push(file.path);
+      // Read the file path from the view state rather than leaf.view.file:
+      // background tabs are deferred in Obsidian 1.7+, so their view has no
+      // .file until activated, but getViewState().state.file is always set.
+      const filePath = leaf.getViewState().state?.file;
+      if (typeof filePath === "string" && !open.includes(filePath)) {
+        open.push(filePath);
       }
     });
     project.lastOpenNotes = open;
