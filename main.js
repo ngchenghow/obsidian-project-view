@@ -108,14 +108,16 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(
       VIEW_TYPE_PROJECT_LIST
     )) {
-      leaf.view.render();
+      if (leaf.view instanceof ProjectListView)
+        leaf.view.render();
     }
   }
   refreshContentView() {
     for (const leaf of this.app.workspace.getLeavesOfType(
       VIEW_TYPE_PROJECT_CONTENT
     )) {
-      leaf.view.render();
+      if (leaf.view instanceof ProjectContentView)
+        leaf.view.render();
     }
   }
   /**
@@ -126,6 +128,8 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.saveActiveProjectTabs();
     this.isActivating = true;
     this.data.activeProjectId = project.id;
+    this.refreshListView();
+    void this.activateContentView();
     const existing = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       existing.push(leaf);
@@ -144,8 +148,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
     }
     await this.persist();
-    this.refreshListView();
-    await this.activateContentView();
     window.setTimeout(() => {
       this.isActivating = false;
     }, 150);

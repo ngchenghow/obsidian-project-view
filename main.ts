@@ -122,7 +122,7 @@ export default class RecentViewPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(
       VIEW_TYPE_PROJECT_LIST
     )) {
-      (leaf.view as ProjectListView).render();
+      if (leaf.view instanceof ProjectListView) leaf.view.render();
     }
   }
 
@@ -130,7 +130,7 @@ export default class RecentViewPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(
       VIEW_TYPE_PROJECT_CONTENT
     )) {
-      (leaf.view as ProjectContentView).render();
+      if (leaf.view instanceof ProjectContentView) leaf.view.render();
     }
   }
 
@@ -145,6 +145,11 @@ export default class RecentViewPlugin extends Plugin {
 
     this.isActivating = true;
     this.data.activeProjectId = project.id;
+
+    // Update the selection UI synchronously, before any async tab work that
+    // could throw and leave the highlight stuck on the previous project.
+    this.refreshListView();
+    void this.activateContentView();
 
     // Close every leaf (tab or split) currently in the main area.
     // Note: iterateRootLeaves stops as soon as the callback returns a truthy
@@ -174,8 +179,6 @@ export default class RecentViewPlugin extends Plugin {
     }
 
     await this.persist();
-    this.refreshListView();
-    await this.activateContentView();
 
     // Release the guard after the layout settles so restored tabs are not
     // immediately recorded as an (empty) snapshot mid-transition.
