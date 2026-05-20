@@ -21,6 +21,8 @@ interface OpenNote {
   // Ephemeral view state (scroll position, cursor) captured when the project
   // was last active, so reopening restores where the user left off.
   eState?: Record<string, unknown>;
+  // Whether this was the focused tab when the project was last active.
+  active?: boolean;
 }
 
 interface Project {
@@ -191,10 +193,14 @@ export default class RecentViewPlugin extends Plugin {
       .map((n) => ({
         file: this.app.vault.getAbstractFileByPath(n.path),
         eState: n.eState,
+        active: n.active === true,
       }))
       .filter(
-        (n): n is { file: TFile; eState: Record<string, unknown> | undefined } =>
-          n.file instanceof TFile
+        (n): n is {
+          file: TFile;
+          eState: Record<string, unknown> | undefined;
+          active: boolean;
+        } => n.file instanceof TFile
       );
 
     if (notes.length === 0) {
@@ -211,13 +217,18 @@ export default class RecentViewPlugin extends Plugin {
       for (const leaf of existing) {
         if (leaf !== target) leaf.detach();
       }
+      const opened: WorkspaceLeaf[] = [];
       await target.openFile(notes[0].file, { eState: notes[0].eState });
+      opened.push(target);
       for (let i = 1; i < notes.length; i++) {
-        await this.app.workspace
-          .getLeaf("tab")
-          .openFile(notes[i].file, { eState: notes[i].eState });
+        const leaf = this.app.workspace.getLeaf("tab");
+        await leaf.openFile(notes[i].file, { eState: notes[i].eState });
+        opened.push(leaf);
       }
-      this.app.workspace.setActiveLeaf(target, { focus: false });
+      // Re-activate the tab that was focused when the project was last left.
+      const activeIndex = notes.findIndex((n) => n.active);
+      const activeLeaf = opened[activeIndex >= 0 ? activeIndex : 0];
+      this.app.workspace.setActiveLeaf(activeLeaf, { focus: true });
     }
 
     await this.persist();
@@ -233,6 +244,13 @@ export default class RecentViewPlugin extends Plugin {
     if (this.isActivating && !force) return -1;
     const project = this.getActiveProject();
     if (!project) return -1;
+    // The most recent main-area leaf is the active tab, even when focus has
+    // moved to the sidebar (e.g. the user just clicked the project list).
+    const activeLeaf = this.app.workspace.getMostRecentLeaf(
+      this.app.workspace.rootSplit
+    );
+    const activePath = activeLeaf?.getViewState().state?.file;
+
     const open: OpenNote[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       // Read the file path from the view state rather than leaf.view.file:
@@ -240,7 +258,11 @@ export default class RecentViewPlugin extends Plugin {
       // .file until activated, but getViewState().state.file is always set.
       const filePath = leaf.getViewState().state?.file;
       if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
-        open.push({ path: filePath, eState: leaf.getEphemeralState() });
+        open.push({
+          path: filePath,
+          eState: leaf.getEphemeralState(),
+          active: filePath === activePath,
+        });
       }
     });
     project.lastOpenNotes = open;

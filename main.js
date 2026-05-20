@@ -151,7 +151,8 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
     const notes = project.lastOpenNotes.map((n) => ({
       file: this.app.vault.getAbstractFileByPath(n.path),
-      eState: n.eState
+      eState: n.eState,
+      active: n.active === true
     })).filter(
       (n) => n.file instanceof import_obsidian.TFile
     );
@@ -164,11 +165,17 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
         if (leaf !== target)
           leaf.detach();
       }
+      const opened = [];
       await target.openFile(notes[0].file, { eState: notes[0].eState });
+      opened.push(target);
       for (let i = 1; i < notes.length; i++) {
-        await this.app.workspace.getLeaf("tab").openFile(notes[i].file, { eState: notes[i].eState });
+        const leaf = this.app.workspace.getLeaf("tab");
+        await leaf.openFile(notes[i].file, { eState: notes[i].eState });
+        opened.push(leaf);
       }
-      this.app.workspace.setActiveLeaf(target, { focus: false });
+      const activeIndex = notes.findIndex((n) => n.active);
+      const activeLeaf = opened[activeIndex >= 0 ? activeIndex : 0];
+      this.app.workspace.setActiveLeaf(activeLeaf, { focus: true });
     }
     await this.persist();
     window.setTimeout(() => {
@@ -176,17 +183,26 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     }, 150);
   }
   saveActiveProjectTabs(force = false) {
+    var _a;
     if (this.isActivating && !force)
       return -1;
     const project = this.getActiveProject();
     if (!project)
       return -1;
+    const activeLeaf = this.app.workspace.getMostRecentLeaf(
+      this.app.workspace.rootSplit
+    );
+    const activePath = (_a = activeLeaf == null ? void 0 : activeLeaf.getViewState().state) == null ? void 0 : _a.file;
     const open = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
-      var _a;
-      const filePath = (_a = leaf.getViewState().state) == null ? void 0 : _a.file;
+      var _a2;
+      const filePath = (_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file;
       if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
-        open.push({ path: filePath, eState: leaf.getEphemeralState() });
+        open.push({
+          path: filePath,
+          eState: leaf.getEphemeralState(),
+          active: filePath === activePath
+        });
       }
     });
     project.lastOpenNotes = open;
