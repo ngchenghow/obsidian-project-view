@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-recent-view",
+  "version": "1.0.0",
+  "description": "Obsidian plugin: project-based recent view with last-open tab restore.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "projects"
+  ],
+  "author": "ngchenghow",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.2",
+    "obsidian": "latest",
+    "typescript": "^5.4.5"
+  }
+}

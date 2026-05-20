@@ -1,0 +1,194 @@
+/* Recent View plugin styles */
+
+.recent-view-list .rv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 4px;
+  gap: 8px;
+}
+
+.recent-view-list .rv-header-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+
+.rv-new-btn {
+  cursor: pointer;
+}
+
+.rv-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.rv-project-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 50px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.rv-project-box:hover {
+  background: var(--background-modifier-hover);
+}
+
+.rv-project-box.is-active {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-active-hover);
+}
+
+.rv-project-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  flex: 1;
+}
+
+.rv-project-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-project-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-project-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.rv-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.rv-icon-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.rv-empty,
+.rv-empty-sm {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 8px;
+}
+
+.rv-empty-sm {
+  padding: 2px 8px 4px 24px;
+}
+
+/* Content (right) view */
+
+.recent-view-content .rv-content-title {
+  margin: 8px 4px 2px;
+}
+
+.rv-folder-section {
+  margin: 8px 0;
+}
+
+.rv-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  padding: 4px 6px;
+}
+
+.rv-folder-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rv-file-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.rv-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 24px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.rv-file-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.rv-file-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.rv-file-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Modal */
+
+.recent-view-modal .rv-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+}
+
+.recent-view-modal .rv-modal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+}
+
+.recent-view-modal .rv-modal-row-path {
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
