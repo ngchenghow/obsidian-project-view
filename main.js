@@ -136,6 +136,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
    * notes that were open the last time this project was active.
    */
   async openProject(project) {
+    var _a;
     this.saveActiveProjectTabs();
     this.isActivating = true;
     this.data.activeProjectId = project.id;
@@ -145,14 +146,21 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.app.workspace.iterateRootLeaves((leaf) => {
       existing.push(leaf);
     });
-    for (const leaf of existing)
-      leaf.detach();
     const files = project.lastOpenNotes.map((p) => this.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian.TFile);
-    let first = true;
-    for (const file of files) {
-      const leaf = this.app.workspace.getLeaf(first ? false : "tab");
-      await leaf.openFile(file);
-      first = false;
+    if (files.length === 0) {
+      for (const leaf of existing)
+        leaf.detach();
+    } else {
+      const target = (_a = existing[0]) != null ? _a : this.app.workspace.getLeaf(false);
+      for (const leaf of existing) {
+        if (leaf !== target)
+          leaf.detach();
+      }
+      await target.openFile(files[0]);
+      for (let i = 1; i < files.length; i++) {
+        await this.app.workspace.getLeaf("tab").openFile(files[i]);
+      }
+      this.app.workspace.setActiveLeaf(target, { focus: false });
     }
     await this.persist();
     window.setTimeout(() => {

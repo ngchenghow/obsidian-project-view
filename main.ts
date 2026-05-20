@@ -165,28 +165,36 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshListView();
     void this.activateContentView();
 
-    // Close every leaf (tab or split) currently in the main area.
+    // Collect the current main-area leaves.
     // Note: iterateRootLeaves stops as soon as the callback returns a truthy
     // value, so the body must not return one (Array.push returns a number).
     const existing: WorkspaceLeaf[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       existing.push(leaf);
     });
-    for (const leaf of existing) leaf.detach();
 
-    // Restore the project's notes as tabs in one shared tab group.
     const files = project.lastOpenNotes
       .map((p) => this.app.vault.getAbstractFileByPath(p))
       .filter((f): f is TFile => f instanceof TFile);
 
-    // First note: getLeaf(false) creates a tab group (the root split has none
-    // after detaching everything, so getLeaf("tab") would throw). Each later
-    // note uses getLeaf("tab"), which now appends to that group as a tab.
-    let first = true;
-    for (const file of files) {
-      const leaf = this.app.workspace.getLeaf(first ? false : "tab");
-      await leaf.openFile(file);
-      first = false;
+    if (files.length === 0) {
+      // No notes to restore: close every tab.
+      for (const leaf of existing) leaf.detach();
+    } else {
+      // Keep one existing leaf alive so its tab group (WorkspaceTabs) persists.
+      // A leaf created after detaching *everything* can sit directly in the
+      // root split with no tab-group wrapper, which makes getLeaf("tab") open
+      // splits instead of tabs. Reusing an existing leaf guarantees the
+      // wrapper, so each getLeaf("tab") appends a real tab to the same group.
+      const target = existing[0] ?? this.app.workspace.getLeaf(false);
+      for (const leaf of existing) {
+        if (leaf !== target) leaf.detach();
+      }
+      await target.openFile(files[0]);
+      for (let i = 1; i < files.length; i++) {
+        await this.app.workspace.getLeaf("tab").openFile(files[i]);
+      }
+      this.app.workspace.setActiveLeaf(target, { focus: false });
     }
 
     await this.persist();
