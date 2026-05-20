@@ -192,8 +192,9 @@ export default class RecentViewPlugin extends Plugin {
         file: this.app.vault.getAbstractFileByPath(n.path),
         eState: n.eState,
       }))
-      .filter((n): n is { file: TFile; eState?: Record<string, unknown> } =>
-        n.file instanceof TFile
+      .filter(
+        (n): n is { file: TFile; eState: Record<string, unknown> | undefined } =>
+          n.file instanceof TFile
       );
 
     if (notes.length === 0) {
