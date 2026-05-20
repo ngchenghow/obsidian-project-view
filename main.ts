@@ -8,6 +8,7 @@ import {
   TFolder,
   Vault,
   WorkspaceLeaf,
+  WorkspaceSplit,
   FuzzySuggestModal,
   setIcon,
   App,
@@ -138,21 +139,34 @@ export default class RecentViewPlugin extends Plugin {
    * notes that were open the last time this project was active.
    */
   async openProject(project: Project): Promise<void> {
+    // Persist the outgoing project's tabs while they are still on screen,
+    // before we change activeProjectId or detach anything.
+    this.saveActiveProjectTabs();
+
     this.isActivating = true;
     this.data.activeProjectId = project.id;
 
-    const leaves: WorkspaceLeaf[] = [];
-    this.app.workspace.iterateRootLeaves((leaf) => leaves.push(leaf));
-    for (const leaf of leaves) leaf.detach();
+    // Close every leaf (tab or split) currently in the main area.
+    const existing: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateRootLeaves((leaf) => existing.push(leaf));
+    for (const leaf of existing) leaf.detach();
 
-    let first = true;
-    for (const path of project.lastOpenNotes) {
-      const file = this.app.vault.getAbstractFileByPath(path);
-      if (file instanceof TFile) {
-        const leaf = this.app.workspace.getLeaf(first ? false : "tab");
-        await leaf.openFile(file);
-        first = false;
+    // Restore the project's notes as tabs inside one shared tab group.
+    const files = project.lastOpenNotes
+      .map((p) => this.app.vault.getAbstractFileByPath(p))
+      .filter((f): f is TFile => f instanceof TFile);
+
+    if (files.length > 0) {
+      const firstLeaf = this.app.workspace.getLeaf("tab");
+      await firstLeaf.openFile(files[0]);
+      // All remaining notes are added as siblings of the first leaf so they
+      // share its tab group instead of opening as splits.
+      const group = firstLeaf.parent as unknown as WorkspaceSplit;
+      for (let i = 1; i < files.length; i++) {
+        const leaf = this.app.workspace.createLeafInParent(group, i);
+        await leaf.openFile(files[i]);
       }
+      this.app.workspace.setActiveLeaf(firstLeaf, { focus: false });
     }
 
     await this.persist();
