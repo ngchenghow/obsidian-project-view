@@ -342,6 +342,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       if (group) {
         this.projectGroups.set(project.id, group);
         this.applyGroupVisibility(project.id);
+        this.applyWallpaper(project, group);
         this.focusGroup(group);
       }
     } catch (e) {
@@ -470,6 +471,32 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     const group = this.getActiveGroup();
     if (group)
       this.focusGroup(group);
+  }
+  /** Apply (or clear) a project's wallpaper image on its pane container. */
+  applyWallpaper(project, group) {
+    const el = this.groupContainer(group);
+    if (!el)
+      return;
+    const path = project.wallpaper;
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    if (file instanceof import_obsidian.TFile) {
+      const url = this.app.vault.getResourcePath(file);
+      el.style.backgroundImage = `url("${url}")`;
+      el.style.backgroundSize = "cover";
+      el.style.backgroundPosition = "center";
+      el.style.backgroundRepeat = "no-repeat";
+      el.addClass("rv-has-wallpaper");
+    } else {
+      el.style.backgroundImage = "";
+      el.removeClass("rv-has-wallpaper");
+    }
+  }
+  /** Re-apply the active project's wallpaper (e.g. after editing it). */
+  refreshWallpaper() {
+    const project = this.getActiveProject();
+    const group = project && this.getLiveGroup(project.id);
+    if (project && group)
+      this.applyWallpaper(project, group);
   }
   saveActiveProjectTabs(force = false) {
     var _a;
@@ -910,7 +937,7 @@ function countMarkdown(folder) {
 }
 var ProjectEditModal = class extends import_obsidian.Modal {
   constructor(app, plugin, project) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     super(app);
     this.plugin = plugin;
     this.project = project;
@@ -918,6 +945,7 @@ var ProjectEditModal = class extends import_obsidian.Modal {
     this.description = (_b = project == null ? void 0 : project.description) != null ? _b : "";
     this.folders = [...(_c = project == null ? void 0 : project.folders) != null ? _c : []];
     this.notes = [...(_d = project == null ? void 0 : project.notes) != null ? _d : []];
+    this.wallpaper = (_e = project == null ? void 0 : project.wallpaper) != null ? _e : "";
   }
   onOpen() {
     this.renderForm();
@@ -962,6 +990,26 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       this.notes = this.notes.filter((x) => x !== path);
       this.renderForm();
     });
+    const wp = new import_obsidian.Setting(contentEl).setName("Wallpaper").setDesc("Image shown behind this project's empty pane").addButton(
+      (b) => b.setButtonText("Choose image").onClick(() => {
+        new ImageSuggestModal(this.app, (file) => {
+          this.wallpaper = file.path;
+          this.renderForm();
+        }).open();
+      })
+    );
+    if (this.wallpaper) {
+      wp.addButton(
+        (b) => b.setButtonText("Clear").onClick(() => {
+          this.wallpaper = "";
+          this.renderForm();
+        })
+      );
+    }
+    if (this.wallpaper) {
+      const row = contentEl.createDiv({ cls: "rv-modal-list" });
+      row.createDiv({ cls: "rv-modal-row" }).createSpan({ cls: "rv-modal-row-path", text: this.wallpaper });
+    }
     const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
     const saveBtn = footer.createEl("button", {
       cls: "mod-cta",
@@ -993,6 +1041,7 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       this.project.description = this.description;
       this.project.folders = this.folders;
       this.project.notes = this.notes;
+      this.project.wallpaper = this.wallpaper || void 0;
     } else {
       this.plugin.data.projects.push({
         id: genId(),
@@ -1001,12 +1050,14 @@ var ProjectEditModal = class extends import_obsidian.Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
-        pinned: []
+        pinned: [],
+        wallpaper: this.wallpaper || void 0
       });
     }
     await this.plugin.persistNow();
     this.plugin.refreshListView();
     this.plugin.refreshContentView();
+    this.plugin.refreshWallpaper();
     this.close();
   }
 };
@@ -1039,6 +1090,23 @@ var FileSuggestModal = class extends import_obsidian.FuzzySuggestModal {
   }
   getItems() {
     return this.app.vault.getMarkdownFiles();
+  }
+  getItemText(item) {
+    return item.path;
+  }
+  onChooseItem(item) {
+    this.onChoose(item);
+  }
+};
+var IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+var ImageSuggestModal = class extends import_obsidian.FuzzySuggestModal {
+  constructor(app, onChoose) {
+    super(app);
+    this.onChoose = onChoose;
+    this.setPlaceholder("Pick an image");
+  }
+  getItems() {
+    return this.app.vault.getFiles().filter((f) => IMAGE_EXTENSIONS.includes(f.extension.toLowerCase()));
   }
   getItemText(item) {
     return item.path;

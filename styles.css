@@ -1,5 +1,11 @@
 /* Recent View plugin styles */
 
+/* Project pane wallpaper: show the image (set on the tab group) through the
+   empty "no file open" state. Open notes stay opaque and cover it. */
+.workspace-tabs.rv-has-wallpaper .workspace-leaf-content[data-type="empty"] {
+  background: transparent;
+}
+
 .recent-view-list .rv-header {
   display: flex;
   align-items: center;
