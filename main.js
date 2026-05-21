@@ -62,20 +62,13 @@ function parseDataNote(content) {
 }
 function showMenu(menu, event, paneEl, btn) {
   btn == null ? void 0 : btn.addClass("is-active");
-  const onPaneDown = (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    menu.hide();
-  };
+  const prevPointerEvents = paneEl.style.pointerEvents;
+  paneEl.style.pointerEvents = "none";
   menu.onHide(() => {
     btn == null ? void 0 : btn.removeClass("is-active");
-    paneEl.removeEventListener("mousedown", onPaneDown, true);
+    paneEl.style.pointerEvents = prevPointerEvents;
   });
   menu.showAtMouseEvent(event);
-  window.setTimeout(
-    () => paneEl.addEventListener("mousedown", onPaneDown, true),
-    0
-  );
 }
 var RecentViewPlugin = class extends import_obsidian.Plugin {
   constructor() {

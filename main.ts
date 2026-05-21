@@ -88,8 +88,10 @@ function parseDataNote(content: string): RecentViewData | null {
 
 /**
  * Show a menu at the click position. Keeps the triggering button highlighted
- * while open, and closes the menu when the user clicks anywhere else in the
- * same pane (consuming that click so it doesn't also trigger the item under it).
+ * while open, and makes the pane click-through (pointer-events: none) so that a
+ * click anywhere in it only dismisses the menu — the click physically cannot
+ * land on a note/folder underneath, and the menu (rendered on document.body)
+ * still works. The menu's own outside-click handling then closes it.
  */
 function showMenu(
   menu: Menu,
@@ -98,21 +100,13 @@ function showMenu(
   btn?: HTMLElement
 ): void {
   btn?.addClass("is-active");
-  const onPaneDown = (ev: MouseEvent) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    menu.hide();
-  };
+  const prevPointerEvents = paneEl.style.pointerEvents;
+  paneEl.style.pointerEvents = "none";
   menu.onHide(() => {
     btn?.removeClass("is-active");
-    paneEl.removeEventListener("mousedown", onPaneDown, true);
+    paneEl.style.pointerEvents = prevPointerEvents;
   });
   menu.showAtMouseEvent(event);
-  // Added on the next tick so the click that opened the menu isn't caught.
-  window.setTimeout(
-    () => paneEl.addEventListener("mousedown", onPaneDown, true),
-    0
-  );
 }
 
 export default class RecentViewPlugin extends Plugin {
