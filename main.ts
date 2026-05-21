@@ -158,7 +158,12 @@ export default class RecentViewPlugin extends Plugin {
       const onVaultChange = () => this.refreshContentView();
       this.registerEvent(this.app.vault.on("create", onVaultChange));
       this.registerEvent(this.app.vault.on("delete", onVaultChange));
-      this.registerEvent(this.app.vault.on("rename", onVaultChange));
+      this.registerEvent(
+        this.app.vault.on("rename", (file, oldPath) => {
+          this.handlePathRename(oldPath, file.path);
+          this.refreshContentView();
+        })
+      );
     });
   }
 
@@ -271,6 +276,30 @@ export default class RecentViewPlugin extends Plugin {
     else project.pinned.push(path);
     await this.persistNow();
     this.refreshContentView();
+  }
+
+  /** Update stored paths across all projects when a file/folder is renamed. */
+  private handlePathRename(oldPath: string, newPath: string): void {
+    const remap = (p: string): string => {
+      if (p === oldPath) return newPath;
+      if (p.startsWith(oldPath + "/")) return newPath + p.slice(oldPath.length);
+      return p;
+    };
+    let changed = false;
+    const track = (before: string, after: string) => {
+      if (before !== after) changed = true;
+      return after;
+    };
+    for (const project of this.data.projects) {
+      project.folders = project.folders.map((f) => track(f, remap(f)));
+      project.notes = project.notes.map((n) => track(n, remap(n)));
+      project.pinned = (project.pinned ?? []).map((p) => track(p, remap(p)));
+      project.lastOpenNotes = project.lastOpenNotes.map((n) => ({
+        ...n,
+        path: track(n.path, remap(n.path)),
+      }));
+    }
+    if (changed) void this.persist();
   }
 
   /** Reorder pinned notes: move fromPath next to toPath (after or before). */
@@ -800,17 +829,35 @@ class ProjectContentView extends ItemView {
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);
 
-    const project = this.plugin.getActiveProject();
-    const pinned = !!project && (project.pinned ?? []).includes(file.path);
-    const pinBtn = item.createEl("button", { cls: "rv-icon-btn rv-pin-btn" });
-    if (pinned) pinBtn.addClass("is-pinned");
-    setIcon(pinBtn, "pin");
-    pinBtn.setAttribute("aria-label", pinned ? "Unpin from top" : "Pin to top");
-    pinBtn.onclick = (e) => {
+    const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "More options");
+    menuBtn.onclick = (e) => {
       e.stopPropagation();
-      if (project) void this.plugin.togglePin(project, file.path);
+      this.showFileMenu(e, file);
     };
     return item;
+  }
+
+  private showFileMenu(e: MouseEvent, file: TFile): void {
+    const project = this.plugin.getActiveProject();
+    const menu = new Menu();
+    if (project) {
+      const pinned = (project.pinned ?? []).includes(file.path);
+      menu.addItem((i) =>
+        i
+          .setTitle(pinned ? "Unpin from top" : "Pin to top")
+          .setIcon(pinned ? "pin-off" : "pin")
+          .onClick(() => void this.plugin.togglePin(project, file.path))
+      );
+    }
+    menu.addItem((i) =>
+      i
+        .setTitle("Rename")
+        .setIcon("pencil")
+        .onClick(() => new RenameModal(this.plugin.app, file).open())
+    );
+    menu.showAtMouseEvent(e);
   }
 
   /** Make a pinned item draggable so the pinned list can be reordered. */
@@ -879,6 +926,68 @@ class ProjectContentView extends ItemView {
       if (leaf.getViewState().state?.file === file.path) found = leaf;
     });
     return found;
+  }
+}
+
+class RenameModal extends Modal {
+  private file: TFile;
+  private value: string;
+
+  constructor(app: App, file: TFile) {
+    super(app);
+    this.file = file;
+    this.value = file.basename;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Rename note" });
+
+    let inputEl: HTMLInputElement | null = null;
+    new Setting(contentEl).setName("New name").addText((t) => {
+      t.setValue(this.value).onChange((v) => (this.value = v));
+      inputEl = t.inputEl;
+      t.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void this.doRename();
+        }
+      });
+    });
+
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "Rename" });
+    ok.onclick = () => void this.doRename();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+
+    window.setTimeout(() => {
+      inputEl?.focus();
+      inputEl?.select();
+    }, 0);
+  }
+
+  private async doRename(): Promise<void> {
+    const name = this.value.trim();
+    if (!name) {
+      new Notice("Name is required");
+      return;
+    }
+    const parent = this.file.parent?.path;
+    const dir = parent && parent !== "/" ? `${parent}/` : "";
+    const newPath = `${dir}${name}.${this.file.extension}`;
+    if (newPath === this.file.path) {
+      this.close();
+      return;
+    }
+    try {
+      await this.app.fileManager.renameFile(this.file, newPath);
+    } catch (e) {
+      new Notice(`Rename failed: ${(e as Error).message}`);
+      return;
+    }
+    this.close();
   }
 }
 

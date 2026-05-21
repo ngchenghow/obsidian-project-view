@@ -177,23 +177,18 @@
   text-overflow: ellipsis;
 }
 
-.rv-pin-btn {
+.rv-item-menu {
   flex-shrink: 0;
   padding: 2px;
   opacity: 0;
 }
 
-.rv-file-item:hover .rv-pin-btn {
+.rv-file-item:hover .rv-item-menu {
   opacity: 0.6;
 }
 
-.rv-pin-btn:hover {
+.rv-item-menu:hover {
   opacity: 1 !important;
-}
-
-.rv-pin-btn.is-pinned {
-  opacity: 1;
-  color: var(--text-accent);
 }
 
 /* Pinned drag-to-reorder */

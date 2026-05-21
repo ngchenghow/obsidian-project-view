@@ -119,7 +119,12 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       const onVaultChange = () => this.refreshContentView();
       this.registerEvent(this.app.vault.on("create", onVaultChange));
       this.registerEvent(this.app.vault.on("delete", onVaultChange));
-      this.registerEvent(this.app.vault.on("rename", onVaultChange));
+      this.registerEvent(
+        this.app.vault.on("rename", (file, oldPath) => {
+          this.handlePathRename(oldPath, file.path);
+          this.refreshContentView();
+        })
+      );
     });
   }
   onunload() {
@@ -220,6 +225,34 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       project.pinned.push(path);
     await this.persistNow();
     this.refreshContentView();
+  }
+  /** Update stored paths across all projects when a file/folder is renamed. */
+  handlePathRename(oldPath, newPath) {
+    var _a;
+    const remap = (p) => {
+      if (p === oldPath)
+        return newPath;
+      if (p.startsWith(oldPath + "/"))
+        return newPath + p.slice(oldPath.length);
+      return p;
+    };
+    let changed = false;
+    const track = (before, after) => {
+      if (before !== after)
+        changed = true;
+      return after;
+    };
+    for (const project of this.data.projects) {
+      project.folders = project.folders.map((f) => track(f, remap(f)));
+      project.notes = project.notes.map((n) => track(n, remap(n)));
+      project.pinned = ((_a = project.pinned) != null ? _a : []).map((p) => track(p, remap(p)));
+      project.lastOpenNotes = project.lastOpenNotes.map((n) => ({
+        ...n,
+        path: track(n.path, remap(n.path))
+      }));
+    }
+    if (changed)
+      void this.persist();
   }
   /** Reorder pinned notes: move fromPath next to toPath (after or before). */
   async movePin(project, fromPath, toPath, after) {
@@ -666,24 +699,33 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     }
   }
   renderFileItem(container, file) {
-    var _a;
     const item = container.createDiv({ cls: "rv-file-item" });
     (0, import_obsidian.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);
-    const project = this.plugin.getActiveProject();
-    const pinned = !!project && ((_a = project.pinned) != null ? _a : []).includes(file.path);
-    const pinBtn = item.createEl("button", { cls: "rv-icon-btn rv-pin-btn" });
-    if (pinned)
-      pinBtn.addClass("is-pinned");
-    (0, import_obsidian.setIcon)(pinBtn, "pin");
-    pinBtn.setAttribute("aria-label", pinned ? "Unpin from top" : "Pin to top");
-    pinBtn.onclick = (e) => {
+    const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
+    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "More options");
+    menuBtn.onclick = (e) => {
       e.stopPropagation();
-      if (project)
-        void this.plugin.togglePin(project, file.path);
+      this.showFileMenu(e, file);
     };
     return item;
+  }
+  showFileMenu(e, file) {
+    var _a;
+    const project = this.plugin.getActiveProject();
+    const menu = new import_obsidian.Menu();
+    if (project) {
+      const pinned = ((_a = project.pinned) != null ? _a : []).includes(file.path);
+      menu.addItem(
+        (i) => i.setTitle(pinned ? "Unpin from top" : "Pin to top").setIcon(pinned ? "pin-off" : "pin").onClick(() => void this.plugin.togglePin(project, file.path))
+      );
+    }
+    menu.addItem(
+      (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, file).open())
+    );
+    menu.showAtMouseEvent(e);
   }
   /** Make a pinned item draggable so the pinned list can be reordered. */
   makePinDraggable(item, file, project) {
@@ -747,6 +789,60 @@ var ProjectContentView = class extends import_obsidian.ItemView {
         found = leaf;
     });
     return found;
+  }
+};
+var RenameModal = class extends import_obsidian.Modal {
+  constructor(app, file) {
+    super(app);
+    this.file = file;
+    this.value = file.basename;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Rename note" });
+    let inputEl = null;
+    new import_obsidian.Setting(contentEl).setName("New name").addText((t) => {
+      t.setValue(this.value).onChange((v) => this.value = v);
+      inputEl = t.inputEl;
+      t.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void this.doRename();
+        }
+      });
+    });
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "Rename" });
+    ok.onclick = () => void this.doRename();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    window.setTimeout(() => {
+      inputEl == null ? void 0 : inputEl.focus();
+      inputEl == null ? void 0 : inputEl.select();
+    }, 0);
+  }
+  async doRename() {
+    var _a;
+    const name = this.value.trim();
+    if (!name) {
+      new import_obsidian.Notice("Name is required");
+      return;
+    }
+    const parent = (_a = this.file.parent) == null ? void 0 : _a.path;
+    const dir = parent && parent !== "/" ? `${parent}/` : "";
+    const newPath = `${dir}${name}.${this.file.extension}`;
+    if (newPath === this.file.path) {
+      this.close();
+      return;
+    }
+    try {
+      await this.app.fileManager.renameFile(this.file, newPath);
+    } catch (e) {
+      new import_obsidian.Notice(`Rename failed: ${e.message}`);
+      return;
+    }
+    this.close();
   }
 };
 function collectMarkdown(folder) {
