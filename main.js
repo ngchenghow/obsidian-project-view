@@ -980,6 +980,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     this.refreshContentView();
   }
   // ---- Google Drive integration ----
+  /** A vault folder path not currently in use (appends a number if taken). */
   uniqueVaultFolder(base) {
     let name = base;
     let i = 2;
@@ -987,81 +988,33 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       name = `${base} ${i++}`;
     return name;
   }
-  /** Prompt for a Drive share link and import it as a new project. */
-  importFromDrive() {
-    if (!isDesktop()) {
-      new import_obsidian2.Notice("Google Drive is desktop-only.");
-      return;
-    }
-    if (!this.drive.isConnected()) {
-      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
-      return;
-    }
-    new PromptModal(
-      this.app,
-      "Import from Google Drive",
-      "",
-      (link) => void this.startDriveImport(link)
-    ).open();
-  }
-  async startDriveImport(link) {
-    const folderId = parseDriveFolderId(link);
-    if (!folderId) {
-      new import_obsidian2.Notice("Couldn't find a Google Drive folder in that link.");
-      return;
-    }
-    let driveName = "Google Drive";
-    try {
-      driveName = await this.drive.getFolderName(folderId);
-    } catch (e) {
-      new import_obsidian2.Notice(`Google Drive: ${e.message}`);
-      return;
-    }
-    const safe = sanitizeVaultName(driveName);
-    new ChoiceModal(this.app, `Import "${driveName}"`, [
-      {
-        label: `New folder ("${safe}")`,
-        cb: () => void this.runDriveImport(
-          folderId,
-          driveName,
-          this.uniqueVaultFolder(safe)
-        )
-      },
-      {
-        label: "Choose existing folder\u2026",
-        cb: () => new FolderSuggestModal(this.app, (folder) => {
-          const target = folder.path === "/" ? this.uniqueVaultFolder(safe) : folder.path;
-          void this.runDriveImport(folderId, driveName, target);
-        }).open()
-      }
-    ]).open();
-  }
-  async runDriveImport(folderId, driveName, vaultDir) {
-    new import_obsidian2.Notice(`Downloading "${driveName}" from Google Drive\u2026`);
+  /** Download a Drive folder into vaultDir, then create + open a linked project. */
+  async createProjectFromDrive(opts) {
+    new import_obsidian2.Notice("Downloading from Google Drive\u2026");
     let count = 0;
     try {
-      count = await this.drive.downloadFolder(folderId, vaultDir);
+      count = await this.drive.downloadFolder(opts.folderId, opts.target);
     } catch (e) {
       new import_obsidian2.Notice(`Google Drive download failed: ${e.message}`);
       return;
     }
     const project = {
       id: genId(),
-      name: driveName,
-      description: "",
-      folders: [vaultDir],
-      notes: [],
+      name: opts.name,
+      description: opts.description,
+      folders: Array.from(/* @__PURE__ */ new Set([...opts.folders, opts.target])),
+      notes: opts.notes,
       lastOpenNotes: [],
       panes: [],
       activePaneId: null,
       pinned: [],
-      driveFolderId: folderId,
-      driveLocalFolder: vaultDir
+      driveFolderId: opts.folderId,
+      driveLocalFolder: opts.target
     };
     this.data.projects.push(project);
     await this.persistNow();
     this.refreshListView();
-    new import_obsidian2.Notice(`Imported ${count} file(s) into "${vaultDir}".`);
+    new import_obsidian2.Notice(`Imported ${count} file(s) into "${opts.target}".`);
     await this.openProject(project);
   }
   async uploadProjectToDrive(project) {
@@ -1112,14 +1065,7 @@ var ProjectListView = class extends import_obsidian2.ItemView {
     c.addClass("recent-view-list");
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const driveBtn = headerActions.createEl("button", {
-      cls: "rv-icon-btn",
-      attr: { "aria-label": "Import from Google Drive" }
-    });
-    (0, import_obsidian2.setIcon)(driveBtn, "cloud-download");
-    driveBtn.onclick = () => this.plugin.importFromDrive();
-    const addBtn = headerActions.createEl("button", {
+    const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
@@ -1564,6 +1510,9 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
   constructor(app, plugin, project) {
     var _a, _b, _c, _d;
     super(app);
+    this.driveLink = "";
+    this.driveTarget = "";
+    this.driveFolderName = "";
     this.plugin = plugin;
     this.project = project;
     this.name = (_a = project == null ? void 0 : project.name) != null ? _a : "";
@@ -1614,6 +1563,8 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
       this.notes = this.notes.filter((x) => x !== path);
       this.renderForm();
     });
+    if (!this.project)
+      this.renderDriveSection(contentEl);
     const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
     const saveBtn = footer.createEl("button", {
       cls: "mod-cta",
@@ -1622,6 +1573,51 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
     saveBtn.onclick = () => void this.save();
     const cancelBtn = footer.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => this.close();
+  }
+  renderDriveSection(contentEl) {
+    new import_obsidian2.Setting(contentEl).setName("Import from Google Drive").setHeading();
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Paste a Google Drive folder share link to download its files into a folder. Set up Google Drive in plugin settings first. Desktop only."
+    });
+    new import_obsidian2.Setting(contentEl).setName("Share link").addText(
+      (t) => t.setPlaceholder("https://drive.google.com/drive/folders/\u2026").setValue(this.driveLink).onChange((v) => this.driveLink = v)
+    ).addButton(
+      (b) => b.setButtonText("Fetch name").onClick(async () => {
+        const id = parseDriveFolderId(this.driveLink);
+        if (!id) {
+          new import_obsidian2.Notice("Couldn't find a Google Drive folder in that link.");
+          return;
+        }
+        if (!this.plugin.drive.isConnected()) {
+          new import_obsidian2.Notice("Connect Google Drive in plugin settings first.");
+          return;
+        }
+        try {
+          this.driveFolderName = await this.plugin.drive.getFolderName(id);
+          if (!this.name.trim())
+            this.name = this.driveFolderName;
+          if (!this.driveTarget.trim()) {
+            this.driveTarget = this.plugin.uniqueVaultFolder(
+              sanitizeVaultName(this.driveFolderName)
+            );
+          }
+          this.renderForm();
+        } catch (e) {
+          new import_obsidian2.Notice(`Google Drive: ${e.message}`);
+        }
+      })
+    );
+    new import_obsidian2.Setting(contentEl).setName("Download to folder").setDesc("New folder name, or choose an existing folder").addText(
+      (t) => t.setPlaceholder("Folder name (defaults to the Drive folder name)").setValue(this.driveTarget).onChange((v) => this.driveTarget = v)
+    ).addButton(
+      (b) => b.setButtonText("Choose").onClick(
+        () => new FolderSuggestModal(this.app, (folder) => {
+          this.driveTarget = folder.path === "/" ? "" : folder.path;
+          this.renderForm();
+        }).open()
+      )
+    );
   }
   renderChipList(parent, items, onRemove) {
     if (items.length === 0)
@@ -1638,6 +1634,44 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
   async save() {
     if (!this.name.trim()) {
       new import_obsidian2.Notice("Project name is required");
+      return;
+    }
+    if (!this.project && this.driveLink.trim()) {
+      if (!isDesktop()) {
+        new import_obsidian2.Notice("Google Drive is desktop-only.");
+        return;
+      }
+      if (!this.plugin.drive.isConnected()) {
+        new import_obsidian2.Notice("Connect Google Drive in plugin settings first.");
+        return;
+      }
+      const folderId = parseDriveFolderId(this.driveLink);
+      if (!folderId) {
+        new import_obsidian2.Notice("Couldn't find a Google Drive folder in that link.");
+        return;
+      }
+      let target = this.driveTarget.trim();
+      if (!target) {
+        let driveName = this.driveFolderName;
+        if (!driveName) {
+          try {
+            driveName = await this.plugin.drive.getFolderName(folderId);
+          } catch (e) {
+            new import_obsidian2.Notice(`Google Drive: ${e.message}`);
+            return;
+          }
+        }
+        target = this.plugin.uniqueVaultFolder(sanitizeVaultName(driveName));
+      }
+      this.close();
+      await this.plugin.createProjectFromDrive({
+        name: this.name.trim(),
+        description: this.description,
+        folders: this.folders,
+        notes: this.notes,
+        folderId,
+        target
+      });
       return;
     }
     if (this.project) {
@@ -1718,26 +1752,6 @@ var ConfirmModal = class extends import_obsidian2.Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
-  }
-};
-var ChoiceModal = class extends import_obsidian2.Modal {
-  constructor(app, titleText, choices) {
-    super(app);
-    this.titleText = titleText;
-    this.choices = choices;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.addClass("recent-view-modal");
-    contentEl.createEl("h3", { text: this.titleText });
-    const wrap = contentEl.createDiv({ cls: "rv-choice-list" });
-    for (const ch of this.choices) {
-      const b = wrap.createEl("button", { text: ch.label });
-      b.onclick = () => {
-        this.close();
-        ch.cb();
-      };
-    }
   }
 };
 var PromptModal = class extends import_obsidian2.Modal {

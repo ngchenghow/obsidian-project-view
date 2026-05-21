@@ -781,97 +781,48 @@ export default class RecentViewPlugin extends Plugin {
 
   // ---- Google Drive integration ----
 
-  private uniqueVaultFolder(base: string): string {
+  /** A vault folder path not currently in use (appends a number if taken). */
+  uniqueVaultFolder(base: string): string {
     let name = base;
     let i = 2;
     while (this.app.vault.getAbstractFileByPath(name)) name = `${base} ${i++}`;
     return name;
   }
 
-  /** Prompt for a Drive share link and import it as a new project. */
-  importFromDrive(): void {
-    if (!isDesktop()) {
-      new Notice("Google Drive is desktop-only.");
-      return;
-    }
-    if (!this.drive.isConnected()) {
-      new Notice("Connect Google Drive in the plugin settings first.");
-      return;
-    }
-    new PromptModal(
-      this.app,
-      "Import from Google Drive",
-      "",
-      (link) => void this.startDriveImport(link)
-    ).open();
-  }
-
-  private async startDriveImport(link: string): Promise<void> {
-    const folderId = parseDriveFolderId(link);
-    if (!folderId) {
-      new Notice("Couldn't find a Google Drive folder in that link.");
-      return;
-    }
-    let driveName = "Google Drive";
-    try {
-      driveName = await this.drive.getFolderName(folderId);
-    } catch (e) {
-      new Notice(`Google Drive: ${(e as Error).message}`);
-      return;
-    }
-    const safe = sanitizeVaultName(driveName);
-    new ChoiceModal(this.app, `Import "${driveName}"`, [
-      {
-        label: `New folder ("${safe}")`,
-        cb: () =>
-          void this.runDriveImport(
-            folderId,
-            driveName,
-            this.uniqueVaultFolder(safe)
-          ),
-      },
-      {
-        label: "Choose existing folder…",
-        cb: () =>
-          new FolderSuggestModal(this.app, (folder) => {
-            const target =
-              folder.path === "/" ? this.uniqueVaultFolder(safe) : folder.path;
-            void this.runDriveImport(folderId, driveName, target);
-          }).open(),
-      },
-    ]).open();
-  }
-
-  private async runDriveImport(
-    folderId: string,
-    driveName: string,
-    vaultDir: string
-  ): Promise<void> {
-    new Notice(`Downloading "${driveName}" from Google Drive…`);
+  /** Download a Drive folder into vaultDir, then create + open a linked project. */
+  async createProjectFromDrive(opts: {
+    name: string;
+    description: string;
+    folders: string[];
+    notes: string[];
+    folderId: string;
+    target: string;
+  }): Promise<void> {
+    new Notice("Downloading from Google Drive…");
     let count = 0;
     try {
-      count = await this.drive.downloadFolder(folderId, vaultDir);
+      count = await this.drive.downloadFolder(opts.folderId, opts.target);
     } catch (e) {
       new Notice(`Google Drive download failed: ${(e as Error).message}`);
       return;
     }
     const project: Project = {
       id: genId(),
-      name: driveName,
-      description: "",
-      folders: [vaultDir],
-      notes: [],
+      name: opts.name,
+      description: opts.description,
+      folders: Array.from(new Set([...opts.folders, opts.target])),
+      notes: opts.notes,
       lastOpenNotes: [],
       panes: [],
       activePaneId: null,
       pinned: [],
-      driveFolderId: folderId,
-      driveLocalFolder: vaultDir,
+      driveFolderId: opts.folderId,
+      driveLocalFolder: opts.target,
     };
     this.data.projects.push(project);
     await this.persistNow();
     this.refreshListView();
-    new Notice(`Imported ${count} file(s) into "${vaultDir}".`);
+    new Notice(`Imported ${count} file(s) into "${opts.target}".`);
     await this.openProject(project);
   }
 
@@ -932,14 +883,7 @@ class ProjectListView extends ItemView {
 
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const driveBtn = headerActions.createEl("button", {
-      cls: "rv-icon-btn",
-      attr: { "aria-label": "Import from Google Drive" },
-    });
-    setIcon(driveBtn, "cloud-download");
-    driveBtn.onclick = () => this.plugin.importFromDrive();
-    const addBtn = headerActions.createEl("button", {
+    const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
     });
@@ -1473,6 +1417,9 @@ class ProjectEditModal extends Modal {
   private description: string;
   private folders: string[];
   private notes: string[];
+  private driveLink = "";
+  private driveTarget = "";
+  private driveFolderName = "";
 
   constructor(app: App, plugin: RecentViewPlugin, project: Project | null) {
     super(app);
@@ -1546,6 +1493,8 @@ class ProjectEditModal extends Modal {
       this.renderForm();
     });
 
+    if (!this.project) this.renderDriveSection(contentEl);
+
     const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
     const saveBtn = footer.createEl("button", {
       cls: "mod-cta",
@@ -1554,6 +1503,66 @@ class ProjectEditModal extends Modal {
     saveBtn.onclick = () => void this.save();
     const cancelBtn = footer.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => this.close();
+  }
+
+  private renderDriveSection(contentEl: HTMLElement): void {
+    new Setting(contentEl).setName("Import from Google Drive").setHeading();
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Paste a Google Drive folder share link to download its files into a folder. Set up Google Drive in plugin settings first. Desktop only.",
+    });
+
+    new Setting(contentEl)
+      .setName("Share link")
+      .addText((t) =>
+        t
+          .setPlaceholder("https://drive.google.com/drive/folders/…")
+          .setValue(this.driveLink)
+          .onChange((v) => (this.driveLink = v))
+      )
+      .addButton((b) =>
+        b.setButtonText("Fetch name").onClick(async () => {
+          const id = parseDriveFolderId(this.driveLink);
+          if (!id) {
+            new Notice("Couldn't find a Google Drive folder in that link.");
+            return;
+          }
+          if (!this.plugin.drive.isConnected()) {
+            new Notice("Connect Google Drive in plugin settings first.");
+            return;
+          }
+          try {
+            this.driveFolderName = await this.plugin.drive.getFolderName(id);
+            if (!this.name.trim()) this.name = this.driveFolderName;
+            if (!this.driveTarget.trim()) {
+              this.driveTarget = this.plugin.uniqueVaultFolder(
+                sanitizeVaultName(this.driveFolderName)
+              );
+            }
+            this.renderForm();
+          } catch (e) {
+            new Notice(`Google Drive: ${(e as Error).message}`);
+          }
+        })
+      );
+
+    new Setting(contentEl)
+      .setName("Download to folder")
+      .setDesc("New folder name, or choose an existing folder")
+      .addText((t) =>
+        t
+          .setPlaceholder("Folder name (defaults to the Drive folder name)")
+          .setValue(this.driveTarget)
+          .onChange((v) => (this.driveTarget = v))
+      )
+      .addButton((b) =>
+        b.setButtonText("Choose").onClick(() =>
+          new FolderSuggestModal(this.app, (folder) => {
+            this.driveTarget = folder.path === "/" ? "" : folder.path;
+            this.renderForm();
+          }).open()
+        )
+      );
   }
 
   private renderChipList(
@@ -1577,6 +1586,47 @@ class ProjectEditModal extends Modal {
       new Notice("Project name is required");
       return;
     }
+
+    // New project created from a Google Drive link: download then create.
+    if (!this.project && this.driveLink.trim()) {
+      if (!isDesktop()) {
+        new Notice("Google Drive is desktop-only.");
+        return;
+      }
+      if (!this.plugin.drive.isConnected()) {
+        new Notice("Connect Google Drive in plugin settings first.");
+        return;
+      }
+      const folderId = parseDriveFolderId(this.driveLink);
+      if (!folderId) {
+        new Notice("Couldn't find a Google Drive folder in that link.");
+        return;
+      }
+      let target = this.driveTarget.trim();
+      if (!target) {
+        let driveName = this.driveFolderName;
+        if (!driveName) {
+          try {
+            driveName = await this.plugin.drive.getFolderName(folderId);
+          } catch (e) {
+            new Notice(`Google Drive: ${(e as Error).message}`);
+            return;
+          }
+        }
+        target = this.plugin.uniqueVaultFolder(sanitizeVaultName(driveName));
+      }
+      this.close();
+      await this.plugin.createProjectFromDrive({
+        name: this.name.trim(),
+        description: this.description,
+        folders: this.folders,
+        notes: this.notes,
+        folderId,
+        target,
+      });
+      return;
+    }
+
     if (this.project) {
       this.project.name = this.name.trim();
       this.project.description = this.description;
@@ -1671,35 +1721,6 @@ class ConfirmModal extends Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
-  }
-}
-
-class ChoiceModal extends Modal {
-  private titleText: string;
-  private choices: { label: string; cb: () => void }[];
-
-  constructor(
-    app: App,
-    titleText: string,
-    choices: { label: string; cb: () => void }[]
-  ) {
-    super(app);
-    this.titleText = titleText;
-    this.choices = choices;
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.addClass("recent-view-modal");
-    contentEl.createEl("h3", { text: this.titleText });
-    const wrap = contentEl.createDiv({ cls: "rv-choice-list" });
-    for (const ch of this.choices) {
-      const b = wrap.createEl("button", { text: ch.label });
-      b.onclick = () => {
-        this.close();
-        ch.cb();
-      };
-    }
   }
 }
 
