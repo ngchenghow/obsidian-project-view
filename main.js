@@ -135,7 +135,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
    * older versions stored in data.json.
    */
   async loadAll() {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const stored = (_a = await this.loadData()) != null ? _a : {};
     this.settings = {
       dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath
@@ -154,6 +154,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     }
     for (const project of this.data.projects) {
       project.lastOpenNotes = ((_c = project.lastOpenNotes) != null ? _c : []).map((n) => typeof n === "string" ? { path: n } : n);
+      project.pinned = (_d = project.pinned) != null ? _d : [];
     }
   }
   async readDataNote() {
@@ -208,6 +209,17 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
   getActiveProject() {
     var _a;
     return (_a = this.data.projects.find((p) => p.id === this.data.activeProjectId)) != null ? _a : null;
+  }
+  async togglePin(project, path) {
+    if (!project.pinned)
+      project.pinned = [];
+    const i = project.pinned.indexOf(path);
+    if (i >= 0)
+      project.pinned.splice(i, 1);
+    else
+      project.pinned.push(path);
+    await this.persistNow();
+    this.refreshContentView();
   }
   async activateListView() {
     const { workspace } = this.app;
@@ -544,7 +556,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     this.render();
   }
   render() {
-    var _a;
+    var _a, _b;
     const c = this.contentEl;
     c.empty();
     c.addClass("recent-view-content");
@@ -576,12 +588,22 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     if (project.description) {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
+    const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile).sort((a, b) => a.basename.localeCompare(b.basename));
+    if (pinnedFiles.length > 0) {
+      const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
+      const head = section.createDiv({ cls: "rv-folder-head" });
+      (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
+      head.createSpan({ text: "Pinned" });
+      const fileList = section.createDiv({ cls: "rv-file-list" });
+      for (const file of pinnedFiles)
+        this.renderFileItem(fileList, file);
+    }
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
       const section = c.createDiv({ cls: "rv-folder-section" });
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
-      head.createSpan({ text: (_a = folder == null ? void 0 : folder.name) != null ? _a : folderPath });
+      head.createSpan({ text: (_b = folder == null ? void 0 : folder.name) != null ? _b : folderPath });
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof import_obsidian.TFolder) {
         const files = collectMarkdown(folder);
@@ -606,10 +628,23 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     }
   }
   renderFileItem(container, file) {
+    var _a;
     const item = container.createDiv({ cls: "rv-file-item" });
     (0, import_obsidian.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);
+    const project = this.plugin.getActiveProject();
+    const pinned = !!project && ((_a = project.pinned) != null ? _a : []).includes(file.path);
+    const pinBtn = item.createEl("button", { cls: "rv-icon-btn rv-pin-btn" });
+    if (pinned)
+      pinBtn.addClass("is-pinned");
+    (0, import_obsidian.setIcon)(pinBtn, "pin");
+    pinBtn.setAttribute("aria-label", pinned ? "Unpin from top" : "Pin to top");
+    pinBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (project)
+        void this.plugin.togglePin(project, file.path);
+    };
   }
   openOrFocus(file) {
     const { workspace } = this.plugin.app;
@@ -743,7 +778,8 @@ var ProjectEditModal = class extends import_obsidian.Modal {
         description: this.description,
         folders: this.folders,
         notes: this.notes,
-        lastOpenNotes: []
+        lastOpenNotes: [],
+        pinned: []
       });
     }
     await this.plugin.persistNow();

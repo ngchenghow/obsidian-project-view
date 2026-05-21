@@ -35,6 +35,8 @@ interface Project {
   folders: string[];
   notes: string[];
   lastOpenNotes: OpenNote[];
+  // Note paths pinned to the top of the content pane, above the folders.
+  pinned: string[];
 }
 
 interface RecentViewData {
@@ -201,6 +203,7 @@ export default class RecentViewPlugin extends Plugin {
       project.lastOpenNotes = (
         (project.lastOpenNotes ?? []) as unknown as (string | OpenNote)[]
       ).map((n) => (typeof n === "string" ? { path: n } : n));
+      project.pinned = project.pinned ?? [];
     }
   }
 
@@ -259,6 +262,15 @@ export default class RecentViewPlugin extends Plugin {
     return (
       this.data.projects.find((p) => p.id === this.data.activeProjectId) ?? null
     );
+  }
+
+  async togglePin(project: Project, path: string): Promise<void> {
+    if (!project.pinned) project.pinned = [];
+    const i = project.pinned.indexOf(path);
+    if (i >= 0) project.pinned.splice(i, 1);
+    else project.pinned.push(path);
+    await this.persistNow();
+    this.refreshContentView();
   }
 
   async activateListView(): Promise<void> {
@@ -695,6 +707,20 @@ class ProjectContentView extends ItemView {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
 
+    // Pinned notes, shown above all folders.
+    const pinnedFiles = (project.pinned ?? [])
+      .map((path) => this.plugin.app.vault.getAbstractFileByPath(path))
+      .filter((f): f is TFile => f instanceof TFile)
+      .sort((a, b) => a.basename.localeCompare(b.basename));
+    if (pinnedFiles.length > 0) {
+      const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
+      const head = section.createDiv({ cls: "rv-folder-head" });
+      setIcon(head.createSpan({ cls: "rv-folder-icon" }), "pin");
+      head.createSpan({ text: "Pinned" });
+      const fileList = section.createDiv({ cls: "rv-file-list" });
+      for (const file of pinnedFiles) this.renderFileItem(fileList, file);
+    }
+
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
       const section = c.createDiv({ cls: "rv-folder-section" });
@@ -733,6 +759,17 @@ class ProjectContentView extends ItemView {
     setIcon(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);
+
+    const project = this.plugin.getActiveProject();
+    const pinned = !!project && (project.pinned ?? []).includes(file.path);
+    const pinBtn = item.createEl("button", { cls: "rv-icon-btn rv-pin-btn" });
+    if (pinned) pinBtn.addClass("is-pinned");
+    setIcon(pinBtn, "pin");
+    pinBtn.setAttribute("aria-label", pinned ? "Unpin from top" : "Pin to top");
+    pinBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (project) void this.plugin.togglePin(project, file.path);
+    };
   }
 
   private openOrFocus(file: TFile): void {
@@ -902,6 +939,7 @@ class ProjectEditModal extends Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
+        pinned: [],
       });
     }
     await this.plugin.persistNow();

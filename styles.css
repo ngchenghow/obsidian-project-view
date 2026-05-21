@@ -170,9 +170,30 @@
 }
 
 .rv-file-name {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rv-pin-btn {
+  flex-shrink: 0;
+  padding: 2px;
+  opacity: 0;
+}
+
+.rv-file-item:hover .rv-pin-btn {
+  opacity: 0.6;
+}
+
+.rv-pin-btn:hover {
+  opacity: 1 !important;
+}
+
+.rv-pin-btn.is-pinned {
+  opacity: 1;
+  color: var(--text-accent);
 }
 
 /* Modal */
