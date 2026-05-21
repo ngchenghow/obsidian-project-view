@@ -119,7 +119,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       }
     });
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
+      this.app.workspace.on("layout-change", () => this.onLayoutChange())
     );
     this.app.workspace.onLayoutReady(() => {
       this.activateListView();
@@ -342,7 +342,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       if (group) {
         this.projectGroups.set(project.id, group);
         this.applyGroupVisibility(project.id);
-        this.refreshWallpaper();
         this.focusGroup(group);
       }
     } catch (e) {
@@ -466,44 +465,29 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     if (leaf)
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
+  /**
+   * React to layout changes: snapshot the active pane's tabs, or — if the active
+   * pane was removed because its last tab was closed — recreate it as an empty
+   * new tab so the project always has a visible pane.
+   */
+  onLayoutChange() {
+    if (this.isActivating)
+      return;
+    const project = this.getActiveProject();
+    if (!project)
+      return;
+    if (this.getLiveGroup(project.id)) {
+      this.saveActiveProjectTabs();
+    } else {
+      project.lastOpenNotes = [];
+      void this.openProject(project);
+    }
+  }
   /** Focus the active project's pane (used before opening a note into it). */
   focusActiveGroup() {
     const group = this.getActiveGroup();
     if (group)
       this.focusGroup(group);
-  }
-  clearWallpaper(el) {
-    el.style.backgroundImage = "";
-    el.removeClass("rv-has-wallpaper");
-  }
-  /**
-   * Clear the wallpaper from every project pane, then set it only on the active
-   * project's pane. Clearing all first prevents a hidden/reused pane's image
-   * from bleeding onto another project.
-   */
-  refreshWallpaper() {
-    for (const [projectId, group2] of [...this.projectGroups]) {
-      const el2 = this.groupContainer(group2);
-      if (!el2 || !el2.isConnected) {
-        this.projectGroups.delete(projectId);
-        continue;
-      }
-      this.clearWallpaper(el2);
-    }
-    const project = this.getActiveProject();
-    const group = project && this.getLiveGroup(project.id);
-    if (!project || !group)
-      return;
-    const el = this.groupContainer(group);
-    const file = project.wallpaper ? this.app.vault.getAbstractFileByPath(project.wallpaper) : null;
-    if (el && file instanceof import_obsidian.TFile) {
-      const url = this.app.vault.getResourcePath(file);
-      el.style.backgroundImage = `url("${url}")`;
-      el.style.backgroundSize = "cover";
-      el.style.backgroundPosition = "center";
-      el.style.backgroundRepeat = "no-repeat";
-      el.addClass("rv-has-wallpaper");
-    }
   }
   saveActiveProjectTabs(force = false) {
     var _a;
@@ -944,7 +928,7 @@ function countMarkdown(folder) {
 }
 var ProjectEditModal = class extends import_obsidian.Modal {
   constructor(app, plugin, project) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d;
     super(app);
     this.plugin = plugin;
     this.project = project;
@@ -952,7 +936,6 @@ var ProjectEditModal = class extends import_obsidian.Modal {
     this.description = (_b = project == null ? void 0 : project.description) != null ? _b : "";
     this.folders = [...(_c = project == null ? void 0 : project.folders) != null ? _c : []];
     this.notes = [...(_d = project == null ? void 0 : project.notes) != null ? _d : []];
-    this.wallpaper = (_e = project == null ? void 0 : project.wallpaper) != null ? _e : "";
   }
   onOpen() {
     this.renderForm();
@@ -997,26 +980,6 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       this.notes = this.notes.filter((x) => x !== path);
       this.renderForm();
     });
-    const wp = new import_obsidian.Setting(contentEl).setName("Wallpaper").setDesc("Image shown behind this project's empty pane").addButton(
-      (b) => b.setButtonText("Choose image").onClick(() => {
-        new ImageSuggestModal(this.app, (file) => {
-          this.wallpaper = file.path;
-          this.renderForm();
-        }).open();
-      })
-    );
-    if (this.wallpaper) {
-      wp.addButton(
-        (b) => b.setButtonText("Clear").onClick(() => {
-          this.wallpaper = "";
-          this.renderForm();
-        })
-      );
-    }
-    if (this.wallpaper) {
-      const row = contentEl.createDiv({ cls: "rv-modal-list" });
-      row.createDiv({ cls: "rv-modal-row" }).createSpan({ cls: "rv-modal-row-path", text: this.wallpaper });
-    }
     const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
     const saveBtn = footer.createEl("button", {
       cls: "mod-cta",
@@ -1048,7 +1011,6 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       this.project.description = this.description;
       this.project.folders = this.folders;
       this.project.notes = this.notes;
-      this.project.wallpaper = this.wallpaper || void 0;
     } else {
       this.plugin.data.projects.push({
         id: genId(),
@@ -1057,14 +1019,12 @@ var ProjectEditModal = class extends import_obsidian.Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
-        pinned: [],
-        wallpaper: this.wallpaper || void 0
+        pinned: []
       });
     }
     await this.plugin.persistNow();
     this.plugin.refreshListView();
     this.plugin.refreshContentView();
-    this.plugin.refreshWallpaper();
     this.close();
   }
 };
@@ -1097,23 +1057,6 @@ var FileSuggestModal = class extends import_obsidian.FuzzySuggestModal {
   }
   getItems() {
     return this.app.vault.getMarkdownFiles();
-  }
-  getItemText(item) {
-    return item.path;
-  }
-  onChooseItem(item) {
-    this.onChoose(item);
-  }
-};
-var IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
-var ImageSuggestModal = class extends import_obsidian.FuzzySuggestModal {
-  constructor(app, onChoose) {
-    super(app);
-    this.onChoose = onChoose;
-    this.setPlaceholder("Pick an image");
-  }
-  getItems() {
-    return this.app.vault.getFiles().filter((f) => IMAGE_EXTENSIONS.includes(f.extension.toLowerCase()));
   }
   getItemText(item) {
     return item.path;

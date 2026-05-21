@@ -38,8 +38,6 @@ interface Project {
   lastOpenNotes: OpenNote[];
   // Note paths pinned to the top of the content pane, above the folders.
   pinned: string[];
-  // Vault path of an image shown as the pane's wallpaper when it's empty.
-  wallpaper?: string;
 }
 
 interface RecentViewData {
@@ -167,7 +165,7 @@ export default class RecentViewPlugin extends Plugin {
     // Track the active project's open tabs as the layout changes (tabs being
     // opened, closed or moved all fire layout-change).
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
+      this.app.workspace.on("layout-change", () => this.onLayoutChange())
     );
 
     this.app.workspace.onLayoutReady(() => {
@@ -412,7 +410,6 @@ export default class RecentViewPlugin extends Plugin {
       if (group) {
         this.projectGroups.set(project.id, group);
         this.applyGroupVisibility(project.id);
-        this.refreshWallpaper();
         this.focusGroup(group);
       }
     } catch (e) {
@@ -562,47 +559,28 @@ export default class RecentViewPlugin extends Plugin {
     if (leaf) this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
 
+  /**
+   * React to layout changes: snapshot the active pane's tabs, or — if the active
+   * pane was removed because its last tab was closed — recreate it as an empty
+   * new tab so the project always has a visible pane.
+   */
+  private onLayoutChange(): void {
+    if (this.isActivating) return;
+    const project = this.getActiveProject();
+    if (!project) return;
+    if (this.getLiveGroup(project.id)) {
+      this.saveActiveProjectTabs();
+    } else {
+      // All tabs closed: reopen the project's pane as an empty new tab.
+      project.lastOpenNotes = [];
+      void this.openProject(project);
+    }
+  }
+
   /** Focus the active project's pane (used before opening a note into it). */
   focusActiveGroup(): void {
     const group = this.getActiveGroup();
     if (group) this.focusGroup(group);
-  }
-
-  private clearWallpaper(el: HTMLElement): void {
-    el.style.backgroundImage = "";
-    el.removeClass("rv-has-wallpaper");
-  }
-
-  /**
-   * Clear the wallpaper from every project pane, then set it only on the active
-   * project's pane. Clearing all first prevents a hidden/reused pane's image
-   * from bleeding onto another project.
-   */
-  refreshWallpaper(): void {
-    for (const [projectId, group] of [...this.projectGroups]) {
-      const el = this.groupContainer(group);
-      if (!el || !el.isConnected) {
-        this.projectGroups.delete(projectId);
-        continue;
-      }
-      this.clearWallpaper(el);
-    }
-
-    const project = this.getActiveProject();
-    const group = project && this.getLiveGroup(project.id);
-    if (!project || !group) return;
-    const el = this.groupContainer(group);
-    const file = project.wallpaper
-      ? this.app.vault.getAbstractFileByPath(project.wallpaper)
-      : null;
-    if (el && file instanceof TFile) {
-      const url = this.app.vault.getResourcePath(file);
-      el.style.backgroundImage = `url("${url}")`;
-      el.style.backgroundSize = "cover";
-      el.style.backgroundPosition = "center";
-      el.style.backgroundRepeat = "no-repeat";
-      el.addClass("rv-has-wallpaper");
-    }
   }
 
   saveActiveProjectTabs(force = false): number {
@@ -1128,7 +1106,6 @@ class ProjectEditModal extends Modal {
   private description: string;
   private folders: string[];
   private notes: string[];
-  private wallpaper: string;
 
   constructor(app: App, plugin: RecentViewPlugin, project: Project | null) {
     super(app);
@@ -1138,7 +1115,6 @@ class ProjectEditModal extends Modal {
     this.description = project?.description ?? "";
     this.folders = [...(project?.folders ?? [])];
     this.notes = [...(project?.notes ?? [])];
-    this.wallpaper = project?.wallpaper ?? "";
   }
 
   onOpen(): void {
@@ -1203,32 +1179,6 @@ class ProjectEditModal extends Modal {
       this.renderForm();
     });
 
-    const wp = new Setting(contentEl)
-      .setName("Wallpaper")
-      .setDesc("Image shown behind this project's empty pane")
-      .addButton((b) =>
-        b.setButtonText("Choose image").onClick(() => {
-          new ImageSuggestModal(this.app, (file) => {
-            this.wallpaper = file.path;
-            this.renderForm();
-          }).open();
-        })
-      );
-    if (this.wallpaper) {
-      wp.addButton((b) =>
-        b.setButtonText("Clear").onClick(() => {
-          this.wallpaper = "";
-          this.renderForm();
-        })
-      );
-    }
-    if (this.wallpaper) {
-      const row = contentEl.createDiv({ cls: "rv-modal-list" });
-      row
-        .createDiv({ cls: "rv-modal-row" })
-        .createSpan({ cls: "rv-modal-row-path", text: this.wallpaper });
-    }
-
     const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
     const saveBtn = footer.createEl("button", {
       cls: "mod-cta",
@@ -1265,7 +1215,6 @@ class ProjectEditModal extends Modal {
       this.project.description = this.description;
       this.project.folders = this.folders;
       this.project.notes = this.notes;
-      this.project.wallpaper = this.wallpaper || undefined;
     } else {
       this.plugin.data.projects.push({
         id: genId(),
@@ -1275,13 +1224,11 @@ class ProjectEditModal extends Modal {
         notes: this.notes,
         lastOpenNotes: [],
         pinned: [],
-        wallpaper: this.wallpaper || undefined,
       });
     }
     await this.plugin.persistNow();
     this.plugin.refreshListView();
     this.plugin.refreshContentView();
-    this.plugin.refreshWallpaper();
     this.close();
   }
 }
@@ -1323,32 +1270,6 @@ class FileSuggestModal extends FuzzySuggestModal<TFile> {
 
   getItems(): TFile[] {
     return this.app.vault.getMarkdownFiles();
-  }
-
-  getItemText(item: TFile): string {
-    return item.path;
-  }
-
-  onChooseItem(item: TFile): void {
-    this.onChoose(item);
-  }
-}
-
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
-
-class ImageSuggestModal extends FuzzySuggestModal<TFile> {
-  private onChoose: (file: TFile) => void;
-
-  constructor(app: App, onChoose: (file: TFile) => void) {
-    super(app);
-    this.onChoose = onChoose;
-    this.setPlaceholder("Pick an image");
-  }
-
-  getItems(): TFile[] {
-    return this.app.vault
-      .getFiles()
-      .filter((f) => IMAGE_EXTENSIONS.includes(f.extension.toLowerCase()));
   }
 
   getItemText(item: TFile): string {
