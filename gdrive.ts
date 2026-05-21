@@ -107,6 +107,7 @@ export class GoogleDriveClient {
       code: string;
       redirectUri: string;
     }>((resolve, reject) => {
+      let redirectUri = "";
       const server = http.createServer((req, res) => {
         try {
           const u = new URL(req.url ?? "", "http://127.0.0.1");
@@ -128,7 +129,7 @@ export class GoogleDriveClient {
       server.listen(0, "127.0.0.1", () => {
         const addr = server.address();
         const port = typeof addr === "object" && addr ? addr.port : 0;
-        const redirectUri = `http://127.0.0.1:${port}`;
+        redirectUri = `http://127.0.0.1:${port}`;
         const authUrl =
           `${AUTH_URL}?` +
           encodeForm({

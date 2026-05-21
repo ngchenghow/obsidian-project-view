@@ -106,6 +106,7 @@ var GoogleDriveClient = class {
     if (!http)
       throw new Error("Google Drive sign-in is desktop-only.");
     const { code, redirectUri } = await new Promise((resolve, reject) => {
+      let redirectUri2 = "";
       const server = http.createServer((req, res2) => {
         var _a;
         try {
@@ -120,7 +121,7 @@ var GoogleDriveClient = class {
           if (err)
             reject(new Error(err));
           else if (code2)
-            resolve({ code: code2, redirectUri });
+            resolve({ code: code2, redirectUri: redirectUri2 });
           else
             reject(new Error("No authorization code returned."));
         } catch (e) {
@@ -132,7 +133,7 @@ var GoogleDriveClient = class {
         var _a;
         const addr = server.address();
         const port = typeof addr === "object" && addr ? addr.port : 0;
-        const redirectUri2 = `http://127.0.0.1:${port}`;
+        redirectUri2 = `http://127.0.0.1:${port}`;
         const authUrl = `${AUTH_URL}?` + encodeForm({
           client_id: this.store.gdriveClientId,
           redirect_uri: redirectUri2,
