@@ -16,6 +16,11 @@ import {
   setIcon,
   App,
 } from "obsidian";
+import {
+  GoogleDriveClient,
+  isDesktop,
+  parseDriveFolderId,
+} from "./gdrive";
 
 const VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 const VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
@@ -49,6 +54,9 @@ interface Project {
   activePaneId?: string | null;
   // Note paths pinned to the top of the content pane, above the folders.
   pinned: string[];
+  // Google Drive sync: source/target folder id and the mirrored vault folder.
+  driveFolderId?: string;
+  driveLocalFolder?: string;
 }
 
 interface RecentViewData {
@@ -59,10 +67,17 @@ interface RecentViewData {
 interface RecentViewSettings {
   // Vault-relative path of the note that stores this vault's project data.
   dataNotePath: string;
+  // Google Drive OAuth credentials + token.
+  gdriveClientId: string;
+  gdriveClientSecret: string;
+  gdriveRefreshToken: string;
 }
 
 const DEFAULT_SETTINGS: RecentViewSettings = {
   dataNotePath: "RecentView.md",
+  gdriveClientId: "",
+  gdriveClientSecret: "",
+  gdriveRefreshToken: "",
 };
 
 // Header written above the JSON block so the note is self-explanatory.
@@ -73,6 +88,10 @@ const DATA_NOTE_HEADER =
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function sanitizeVaultName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
 }
 
 function buildDataNote(data: RecentViewData): string {
@@ -128,6 +147,16 @@ export default class RecentViewPlugin extends Plugin {
   // Live tab group (pane) per project, kept alive so switching just shows/hides
   // panes instead of closing and reopening notes.
   private projectGroups: Map<string, WorkspaceParent> = new Map();
+  private _drive: GoogleDriveClient | null = null;
+
+  get drive(): GoogleDriveClient {
+    if (!this._drive) {
+      this._drive = new GoogleDriveClient(this.app, this.settings, () =>
+        this.saveSettings()
+      );
+    }
+    return this._drive;
+  }
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -222,6 +251,9 @@ export default class RecentViewPlugin extends Plugin {
     >;
     this.settings = {
       dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath,
+      gdriveClientId: stored.gdriveClientId ?? "",
+      gdriveClientSecret: stored.gdriveClientSecret ?? "",
+      gdriveRefreshToken: stored.gdriveRefreshToken ?? "",
     };
 
     const fromNote = await this.readDataNote();
@@ -744,6 +776,127 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshListView();
     this.refreshContentView();
   }
+
+  // ---- Google Drive integration ----
+
+  private uniqueVaultFolder(base: string): string {
+    let name = base;
+    let i = 2;
+    while (this.app.vault.getAbstractFileByPath(name)) name = `${base} ${i++}`;
+    return name;
+  }
+
+  /** Prompt for a Drive share link and import it as a new project. */
+  importFromDrive(): void {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    new PromptModal(
+      this.app,
+      "Import from Google Drive",
+      "",
+      (link) => void this.startDriveImport(link)
+    ).open();
+  }
+
+  private async startDriveImport(link: string): Promise<void> {
+    const folderId = parseDriveFolderId(link);
+    if (!folderId) {
+      new Notice("Couldn't find a Google Drive folder in that link.");
+      return;
+    }
+    let driveName = "Google Drive";
+    try {
+      driveName = await this.drive.getFolderName(folderId);
+    } catch (e) {
+      new Notice(`Google Drive: ${(e as Error).message}`);
+      return;
+    }
+    const safe = sanitizeVaultName(driveName);
+    new ChoiceModal(this.app, `Import "${driveName}"`, [
+      {
+        label: `New folder ("${safe}")`,
+        cb: () =>
+          void this.runDriveImport(
+            folderId,
+            driveName,
+            this.uniqueVaultFolder(safe)
+          ),
+      },
+      {
+        label: "Choose existing folder…",
+        cb: () =>
+          new FolderSuggestModal(this.app, (folder) => {
+            const target =
+              folder.path === "/" ? this.uniqueVaultFolder(safe) : folder.path;
+            void this.runDriveImport(folderId, driveName, target);
+          }).open(),
+      },
+    ]).open();
+  }
+
+  private async runDriveImport(
+    folderId: string,
+    driveName: string,
+    vaultDir: string
+  ): Promise<void> {
+    new Notice(`Downloading "${driveName}" from Google Drive…`);
+    let count = 0;
+    try {
+      count = await this.drive.downloadFolder(folderId, vaultDir);
+    } catch (e) {
+      new Notice(`Google Drive download failed: ${(e as Error).message}`);
+      return;
+    }
+    const project: Project = {
+      id: genId(),
+      name: driveName,
+      description: "",
+      folders: [vaultDir],
+      notes: [],
+      lastOpenNotes: [],
+      panes: [],
+      activePaneId: null,
+      pinned: [],
+      driveFolderId: folderId,
+      driveLocalFolder: vaultDir,
+    };
+    this.data.projects.push(project);
+    await this.persistNow();
+    this.refreshListView();
+    new Notice(`Imported ${count} file(s) into "${vaultDir}".`);
+    await this.openProject(project);
+  }
+
+  async uploadProjectToDrive(project: Project): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    new Notice(`Uploading "${project.name}" to Google Drive…`);
+    try {
+      const n = await this.drive.uploadFolder(
+        project.driveLocalFolder,
+        project.driveFolderId
+      );
+      new Notice(`Uploaded ${n} file(s) to Google Drive.`);
+    } catch (e) {
+      new Notice(`Google Drive upload failed: ${(e as Error).message}`);
+    }
+  }
 }
 
 class ProjectListView extends ItemView {
@@ -777,7 +930,14 @@ class ProjectListView extends ItemView {
 
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const driveBtn = headerActions.createEl("button", {
+      cls: "rv-icon-btn",
+      attr: { "aria-label": "Import from Google Drive" },
+    });
+    setIcon(driveBtn, "cloud-download");
+    driveBtn.onclick = () => this.plugin.importFromDrive();
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
     });
@@ -821,6 +981,14 @@ class ProjectListView extends ItemView {
               new ProjectEditModal(this.plugin.app, this.plugin, project).open()
             )
         );
+        if (project.driveFolderId) {
+          menu.addItem((item) =>
+            item
+              .setTitle("Upload to Google Drive")
+              .setIcon("cloud-upload")
+              .onClick(() => void this.plugin.uploadProjectToDrive(project))
+          );
+        }
         menu.addItem((item) =>
           item
             .setTitle("Delete project")
@@ -1504,6 +1672,35 @@ class ConfirmModal extends Modal {
   }
 }
 
+class ChoiceModal extends Modal {
+  private titleText: string;
+  private choices: { label: string; cb: () => void }[];
+
+  constructor(
+    app: App,
+    titleText: string,
+    choices: { label: string; cb: () => void }[]
+  ) {
+    super(app);
+    this.titleText = titleText;
+    this.choices = choices;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: this.titleText });
+    const wrap = contentEl.createDiv({ cls: "rv-choice-list" });
+    for (const ch of this.choices) {
+      const b = wrap.createEl("button", { text: ch.label });
+      b.onclick = () => {
+        this.close();
+        ch.cb();
+      };
+    }
+  }
+}
+
 class PromptModal extends Modal {
   private titleText: string;
   private value: string;
@@ -1589,6 +1786,66 @@ class RecentViewSettingTab extends PluginSettingTab {
             this.plugin.settings.dataNotePath = next;
             // Write the current data to the new location immediately.
             await this.plugin.persistNow();
+          })
+      );
+
+    new Setting(containerEl).setName("Google Drive").setHeading();
+
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Create an OAuth client (type: Desktop app) in Google Cloud Console, " +
+        "enable the Google Drive API, then paste the Client ID and Secret " +
+        "below and click Connect. Desktop only.",
+    });
+
+    new Setting(containerEl).setName("Client ID").addText((text) =>
+      text
+        .setValue(this.plugin.settings.gdriveClientId)
+        .onChange(async (v) => {
+          this.plugin.settings.gdriveClientId = v.trim();
+          await this.plugin.saveSettings();
+        })
+    );
+
+    new Setting(containerEl).setName("Client Secret").addText((text) => {
+      text.inputEl.type = "password";
+      text.setValue(this.plugin.settings.gdriveClientSecret).onChange(async (v) => {
+        this.plugin.settings.gdriveClientSecret = v.trim();
+        await this.plugin.saveSettings();
+      });
+    });
+
+    const connected = this.plugin.drive.isConnected();
+    new Setting(containerEl)
+      .setName("Connection")
+      .setDesc(connected ? "Connected to Google Drive." : "Not connected.")
+      .addButton((b) =>
+        b
+          .setButtonText(connected ? "Reconnect" : "Connect")
+          .setCta()
+          .onClick(async () => {
+            if (!isDesktop()) {
+              new Notice("Google Drive sign-in is desktop-only.");
+              return;
+            }
+            try {
+              new Notice("Opening Google sign-in in your browser…");
+              await this.plugin.drive.connect();
+              new Notice("Connected to Google Drive.");
+              this.display();
+            } catch (e) {
+              new Notice(`Google Drive: ${(e as Error).message}`);
+            }
+          })
+      )
+      .addExtraButton((b) =>
+        b
+          .setIcon("log-out")
+          .setTooltip("Disconnect")
+          .onClick(async () => {
+            await this.plugin.drive.disconnect();
+            this.display();
           })
       );
   }

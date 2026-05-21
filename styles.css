@@ -13,7 +13,26 @@
   font-size: var(--font-ui-medium);
 }
 
+.rv-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .rv-new-btn {
+  cursor: pointer;
+}
+
+.rv-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.rv-choice-list button {
+  width: 100%;
   cursor: pointer;
 }
 

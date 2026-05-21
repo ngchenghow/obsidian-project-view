@@ -23,15 +23,342 @@ __export(main_exports, {
   default: () => RecentViewPlugin
 });
 module.exports = __toCommonJS(main_exports);
+var import_obsidian2 = require("obsidian");
+
+// gdrive.ts
 var import_obsidian = require("obsidian");
+var TOKEN_URL = "https://oauth2.googleapis.com/token";
+var AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+var SCOPE = "https://www.googleapis.com/auth/drive";
+var FOLDER_MIME = "application/vnd.google-apps.folder";
+var EXPORT_MAP = {
+  "application/vnd.google-apps.document": { mime: "text/markdown", ext: "md" },
+  "application/vnd.google-apps.spreadsheet": { mime: "text/csv", ext: "csv" },
+  "application/vnd.google-apps.presentation": {
+    mime: "application/pdf",
+    ext: "pdf"
+  },
+  "application/vnd.google-apps.drawing": { mime: "image/png", ext: "png" }
+};
+function getNode(mod) {
+  var _a;
+  try {
+    const req = window.require;
+    return (_a = req ? req(mod) : null) != null ? _a : null;
+  } catch (e) {
+    return null;
+  }
+}
+function sanitizeName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "untitled";
+}
+function encodeForm(data) {
+  return Object.entries(data).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+}
+function isDesktop() {
+  return getNode("http") !== null;
+}
+function parseDriveFolderId(input) {
+  const s = input.trim();
+  const folders = s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folders)
+    return folders[1];
+  const idParam = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParam)
+    return idParam[1];
+  const open = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (open)
+    return open[1];
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(s))
+    return s;
+  return null;
+}
+var GoogleDriveClient = class {
+  constructor(app, store, persist) {
+    this.app = app;
+    this.store = store;
+    this.persist = persist;
+    this.accessToken = "";
+    this.expiry = 0;
+  }
+  isConfigured() {
+    return !!(this.store.gdriveClientId && this.store.gdriveClientSecret);
+  }
+  isConnected() {
+    return !!this.store.gdriveRefreshToken;
+  }
+  async disconnect() {
+    this.store.gdriveRefreshToken = "";
+    this.accessToken = "";
+    this.expiry = 0;
+    await this.persist();
+  }
+  /** Run the loopback OAuth flow and store a refresh token (desktop only). */
+  async connect() {
+    if (!this.isConfigured()) {
+      throw new Error("Set your Google OAuth Client ID and Secret first.");
+    }
+    const http = getNode("http");
+    if (!http)
+      throw new Error("Google Drive sign-in is desktop-only.");
+    const { code, redirectUri } = await new Promise((resolve, reject) => {
+      const server = http.createServer((req, res2) => {
+        var _a;
+        try {
+          const u = new URL((_a = req.url) != null ? _a : "", "http://127.0.0.1");
+          const code2 = u.searchParams.get("code");
+          const err = u.searchParams.get("error");
+          res2.writeHead(200, { "Content-Type": "text/html" });
+          res2.end(
+            "<html><body style='font-family:sans-serif'>Recent View: Google Drive connected. You can close this tab.</body></html>"
+          );
+          server.close();
+          if (err)
+            reject(new Error(err));
+          else if (code2)
+            resolve({ code: code2, redirectUri });
+          else
+            reject(new Error("No authorization code returned."));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        var _a;
+        const addr = server.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const redirectUri2 = `http://127.0.0.1:${port}`;
+        const authUrl = `${AUTH_URL}?` + encodeForm({
+          client_id: this.store.gdriveClientId,
+          redirect_uri: redirectUri2,
+          response_type: "code",
+          scope: SCOPE,
+          access_type: "offline",
+          prompt: "consent"
+        });
+        const electron = getNode("electron");
+        if ((_a = electron == null ? void 0 : electron.shell) == null ? void 0 : _a.openExternal)
+          electron.shell.openExternal(authUrl);
+        else
+          window.open(authUrl, "_blank");
+      });
+      window.setTimeout(() => {
+        try {
+          server.close();
+        } catch (e) {
+        }
+        reject(new Error("OAuth timed out."));
+      }, 3e5);
+    });
+    const res = await (0, import_obsidian.requestUrl)({
+      url: TOKEN_URL,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: encodeForm({
+        code,
+        client_id: this.store.gdriveClientId,
+        client_secret: this.store.gdriveClientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code"
+      }),
+      throw: false
+    });
+    if (res.status >= 400) {
+      throw new Error(`Token exchange failed: ${res.text}`);
+    }
+    const json = res.json;
+    if (!json.refresh_token) {
+      throw new Error(
+        "No refresh token returned. Remove the app's access at myaccount.google.com/permissions and try again."
+      );
+    }
+    this.store.gdriveRefreshToken = json.refresh_token;
+    this.accessToken = json.access_token;
+    this.expiry = Date.now() + json.expires_in * 1e3;
+    await this.persist();
+  }
+  async getAccessToken() {
+    if (this.accessToken && Date.now() < this.expiry - 6e4) {
+      return this.accessToken;
+    }
+    if (!this.store.gdriveRefreshToken) {
+      throw new Error("Not connected to Google Drive.");
+    }
+    const res = await (0, import_obsidian.requestUrl)({
+      url: TOKEN_URL,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: encodeForm({
+        client_id: this.store.gdriveClientId,
+        client_secret: this.store.gdriveClientSecret,
+        refresh_token: this.store.gdriveRefreshToken,
+        grant_type: "refresh_token"
+      }),
+      throw: false
+    });
+    if (res.status >= 400) {
+      throw new Error(`Token refresh failed: ${res.text}`);
+    }
+    const json = res.json;
+    this.accessToken = json.access_token;
+    this.expiry = Date.now() + json.expires_in * 1e3;
+    return this.accessToken;
+  }
+  async api(url, init = {}) {
+    var _a, _b;
+    const token = await this.getAccessToken();
+    const res = await (0, import_obsidian.requestUrl)({
+      url,
+      method: (_a = init.method) != null ? _a : "GET",
+      headers: { Authorization: `Bearer ${token}`, ...(_b = init.headers) != null ? _b : {} },
+      body: init.body,
+      throw: false
+    });
+    if (res.status >= 400) {
+      throw new Error(`Drive API ${res.status}: ${res.text}`);
+    }
+    return res;
+  }
+  async getFolderName(folderId) {
+    var _a;
+    const res = await this.api(
+      `https://www.googleapis.com/drive/v3/files/${folderId}?fields=name&supportsAllDrives=true`
+    );
+    return (_a = res.json.name) != null ? _a : "Google Drive";
+  }
+  async listChildren(folderId) {
+    var _a, _b;
+    const out = [];
+    let pageToken = "";
+    do {
+      const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true` + (pageToken ? `&pageToken=${pageToken}` : "");
+      const res = await this.api(url);
+      const json = res.json;
+      out.push(...(_a = json.files) != null ? _a : []);
+      pageToken = (_b = json.nextPageToken) != null ? _b : "";
+    } while (pageToken);
+    return out;
+  }
+  async ensureDir(path) {
+    const adapter = this.app.vault.adapter;
+    const parts = path.split("/").filter(Boolean);
+    let cur = "";
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      if (!await adapter.exists(cur))
+        await adapter.mkdir(cur);
+    }
+  }
+  /** Recursively download a Drive folder into a vault directory. */
+  async downloadFolder(folderId, vaultDir) {
+    await this.ensureDir(vaultDir);
+    let count = 0;
+    for (const child of await this.listChildren(folderId)) {
+      if (child.mimeType === FOLDER_MIME) {
+        count += await this.downloadFolder(
+          child.id,
+          `${vaultDir}/${sanitizeName(child.name)}`
+        );
+        continue;
+      }
+      const dl = await this.downloadFile(child);
+      if (!dl)
+        continue;
+      await this.app.vault.adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
+      count++;
+    }
+    return count;
+  }
+  async downloadFile(child) {
+    let url;
+    let name = sanitizeName(child.name);
+    if (child.mimeType.startsWith("application/vnd.google-apps")) {
+      const exp = EXPORT_MAP[child.mimeType];
+      if (!exp)
+        return null;
+      url = `https://www.googleapis.com/drive/v3/files/${child.id}/export?mimeType=${encodeURIComponent(exp.mime)}`;
+      if (!name.toLowerCase().endsWith(`.${exp.ext}`))
+        name += `.${exp.ext}`;
+    } else {
+      url = `https://www.googleapis.com/drive/v3/files/${child.id}?alt=media&supportsAllDrives=true`;
+    }
+    const res = await this.api(url);
+    return { name, data: res.arrayBuffer };
+  }
+  async createFolder(name, parentId) {
+    const res = await this.api(
+      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] })
+      }
+    );
+    return res.json.id;
+  }
+  async createFile(name, parentId, data) {
+    const meta = await this.api(
+      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, parents: [parentId] })
+      }
+    );
+    const id = meta.json.id;
+    await this.updateFileContent(id, data);
+  }
+  async updateFileContent(id, data) {
+    await this.api(
+      `https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&supportsAllDrives=true`,
+      { method: "PATCH", body: data }
+    );
+  }
+  /** Recursively upload a vault folder's contents into a Drive folder. */
+  async uploadFolder(vaultDir, folderId) {
+    const folder = this.app.vault.getAbstractFileByPath(vaultDir);
+    if (!(folder instanceof import_obsidian.TFolder))
+      return 0;
+    const existing = await this.listChildren(folderId);
+    const byName = new Map(existing.map((c) => [c.name, c]));
+    let count = 0;
+    for (const child of folder.children) {
+      if (child instanceof import_obsidian.TFolder) {
+        const match = byName.get(child.name);
+        const subId = match && match.mimeType === FOLDER_MIME ? match.id : await this.createFolder(child.name, folderId);
+        count += await this.uploadFolder(child.path, subId);
+      } else if (child instanceof import_obsidian.TFile) {
+        const data = await this.app.vault.readBinary(child);
+        const match = byName.get(child.name);
+        if (match && match.mimeType !== FOLDER_MIME) {
+          await this.updateFileContent(match.id, data);
+        } else {
+          await this.createFile(child.name, folderId, data);
+        }
+        count++;
+      }
+    }
+    return count;
+  }
+};
+
+// main.ts
 var VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 var VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
 var DEFAULT_SETTINGS = {
-  dataNotePath: "RecentView.md"
+  dataNotePath: "RecentView.md",
+  gdriveClientId: "",
+  gdriveClientSecret: "",
+  gdriveRefreshToken: ""
 };
 var DATA_NOTE_HEADER = "# Recent View data\n\nThis note is managed by the **Recent View** plugin and stores this vault's projects. Avoid editing the JSON block below by hand.";
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function sanitizeVaultName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
 }
 function buildDataNote(data) {
   return `${DATA_NOTE_HEADER}
@@ -70,7 +397,7 @@ function showMenu(menu, event, paneEl, btn) {
   });
   menu.showAtMouseEvent(event);
 }
-var RecentViewPlugin = class extends import_obsidian.Plugin {
+var RecentViewPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);
     this.data = { projects: [], activeProjectId: null };
@@ -80,6 +407,17 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     // Live tab group (pane) per project, kept alive so switching just shows/hides
     // panes instead of closing and reopening notes.
     this.projectGroups = /* @__PURE__ */ new Map();
+    this._drive = null;
+  }
+  get drive() {
+    if (!this._drive) {
+      this._drive = new GoogleDriveClient(
+        this.app,
+        this.settings,
+        () => this.saveSettings()
+      );
+    }
+    return this._drive;
   }
   async onload() {
     await this.loadAll();
@@ -113,7 +451,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       callback: () => {
         const n = this.saveActiveProjectTabs(true);
         const p = this.getActiveProject();
-        new import_obsidian.Notice(
+        new import_obsidian2.Notice(
           p ? `RecentView: saved ${n} tab(s) to "${p.name}"` : "RecentView: no active project"
         );
       }
@@ -150,10 +488,13 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
    * older versions stored in data.json.
    */
   async loadAll() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g;
     const stored = (_a = await this.loadData()) != null ? _a : {};
     this.settings = {
-      dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath
+      dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath,
+      gdriveClientId: (_b = stored.gdriveClientId) != null ? _b : "",
+      gdriveClientSecret: (_c = stored.gdriveClientSecret) != null ? _c : "",
+      gdriveRefreshToken: (_d = stored.gdriveRefreshToken) != null ? _d : ""
     };
     const fromNote = await this.readDataNote();
     if (fromNote) {
@@ -161,7 +502,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     } else if (stored.projects) {
       this.data = {
         projects: stored.projects,
-        activeProjectId: (_b = stored.activeProjectId) != null ? _b : null
+        activeProjectId: (_e = stored.activeProjectId) != null ? _e : null
       };
       await this.writeDataNote();
     } else {
@@ -172,8 +513,8 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     );
     for (const project of this.data.projects) {
       project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
-      project.pinned = (_c = project.pinned) != null ? _c : [];
-      project.panes = ((_d = project.panes) != null ? _d : []).map((p) => ({
+      project.pinned = (_f = project.pinned) != null ? _f : [];
+      project.panes = ((_g = project.panes) != null ? _g : []).map((p) => ({
         id: p.id,
         name: p.name,
         lastOpenNotes: migrateNotes(p.lastOpenNotes)
@@ -437,7 +778,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       eState: n.eState,
       active: n.active === true
     })).filter(
-      (n) => n.file instanceof import_obsidian.TFile
+      (n) => n.file instanceof import_obsidian2.TFile
     );
   }
   /** Create a new empty pane for a project and switch to it. */
@@ -633,8 +974,117 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.refreshListView();
     this.refreshContentView();
   }
+  // ---- Google Drive integration ----
+  uniqueVaultFolder(base) {
+    let name = base;
+    let i = 2;
+    while (this.app.vault.getAbstractFileByPath(name))
+      name = `${base} ${i++}`;
+    return name;
+  }
+  /** Prompt for a Drive share link and import it as a new project. */
+  importFromDrive() {
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    new PromptModal(
+      this.app,
+      "Import from Google Drive",
+      "",
+      (link) => void this.startDriveImport(link)
+    ).open();
+  }
+  async startDriveImport(link) {
+    const folderId = parseDriveFolderId(link);
+    if (!folderId) {
+      new import_obsidian2.Notice("Couldn't find a Google Drive folder in that link.");
+      return;
+    }
+    let driveName = "Google Drive";
+    try {
+      driveName = await this.drive.getFolderName(folderId);
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive: ${e.message}`);
+      return;
+    }
+    const safe = sanitizeVaultName(driveName);
+    new ChoiceModal(this.app, `Import "${driveName}"`, [
+      {
+        label: `New folder ("${safe}")`,
+        cb: () => void this.runDriveImport(
+          folderId,
+          driveName,
+          this.uniqueVaultFolder(safe)
+        )
+      },
+      {
+        label: "Choose existing folder\u2026",
+        cb: () => new FolderSuggestModal(this.app, (folder) => {
+          const target = folder.path === "/" ? this.uniqueVaultFolder(safe) : folder.path;
+          void this.runDriveImport(folderId, driveName, target);
+        }).open()
+      }
+    ]).open();
+  }
+  async runDriveImport(folderId, driveName, vaultDir) {
+    new import_obsidian2.Notice(`Downloading "${driveName}" from Google Drive\u2026`);
+    let count = 0;
+    try {
+      count = await this.drive.downloadFolder(folderId, vaultDir);
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive download failed: ${e.message}`);
+      return;
+    }
+    const project = {
+      id: genId(),
+      name: driveName,
+      description: "",
+      folders: [vaultDir],
+      notes: [],
+      lastOpenNotes: [],
+      panes: [],
+      activePaneId: null,
+      pinned: [],
+      driveFolderId: folderId,
+      driveLocalFolder: vaultDir
+    };
+    this.data.projects.push(project);
+    await this.persistNow();
+    this.refreshListView();
+    new import_obsidian2.Notice(`Imported ${count} file(s) into "${vaultDir}".`);
+    await this.openProject(project);
+  }
+  async uploadProjectToDrive(project) {
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    new import_obsidian2.Notice(`Uploading "${project.name}" to Google Drive\u2026`);
+    try {
+      const n = await this.drive.uploadFolder(
+        project.driveLocalFolder,
+        project.driveFolderId
+      );
+      new import_obsidian2.Notice(`Uploaded ${n} file(s) to Google Drive.`);
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive upload failed: ${e.message}`);
+    }
+  }
 };
-var ProjectListView = class extends import_obsidian.ItemView {
+var ProjectListView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -657,7 +1107,14 @@ var ProjectListView = class extends import_obsidian.ItemView {
     c.addClass("recent-view-list");
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const driveBtn = headerActions.createEl("button", {
+      cls: "rv-icon-btn",
+      attr: { "aria-label": "Import from Google Drive" }
+    });
+    (0, import_obsidian2.setIcon)(driveBtn, "cloud-download");
+    driveBtn.onclick = () => this.plugin.importFromDrive();
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
@@ -682,16 +1139,21 @@ var ProjectListView = class extends import_obsidian.ItemView {
       }
       const actions = box.createDiv({ cls: "rv-project-actions" });
       const menuBtn = actions.createEl("button", { cls: "rv-icon-btn" });
-      (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+      (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
       menuBtn.setAttribute("aria-label", "Project options");
       menuBtn.onclick = (e) => {
         e.stopPropagation();
-        const menu = new import_obsidian.Menu();
+        const menu = new import_obsidian2.Menu();
         menu.addItem(
           (item) => item.setTitle("Edit project").setIcon("pencil").onClick(
             () => new ProjectEditModal(this.plugin.app, this.plugin, project).open()
           )
         );
+        if (project.driveFolderId) {
+          menu.addItem(
+            (item) => item.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadProjectToDrive(project))
+          );
+        }
         menu.addItem(
           (item) => item.setTitle("Delete project").setIcon("trash-2").onClick(
             () => new ConfirmModal(
@@ -707,7 +1169,7 @@ var ProjectListView = class extends import_obsidian.ItemView {
     }
   }
 };
-var ProjectContentView = class extends import_obsidian.ItemView {
+var ProjectContentView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.reordering = false;
@@ -740,10 +1202,10 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const menuBtn = header.createEl("button", {
       cls: "rv-icon-btn rv-content-menu"
     });
-    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
-      const menu = new import_obsidian.Menu();
+      const menu = new import_obsidian2.Menu();
       if (project) {
         menu.addItem(
           (item) => item.setTitle("New pane").setIcon("plus").onClick(
@@ -772,22 +1234,22 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       info.createDiv({ cls: "rv-project-desc", text: project.description });
     }
     this.renderPanes(c, project);
-    const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile);
+    const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian2.TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
       if (this.reordering)
         section.addClass("rv-reordering");
       const head = section.createDiv({ cls: "rv-folder-head" });
-      (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
+      (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
       const menuBtn2 = head.createEl("button", {
         cls: "rv-icon-btn rv-head-menu"
       });
-      (0, import_obsidian.setIcon)(menuBtn2, "more-vertical");
+      (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
       menuBtn2.setAttribute("aria-label", "More options");
       menuBtn2.onclick = (e) => {
         e.stopPropagation();
-        const menu = new import_obsidian.Menu();
+        const menu = new import_obsidian2.Menu();
         menu.addItem(
           (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder").setIcon(this.reordering ? "check" : "arrow-up-down").onClick(() => {
             this.reordering = !this.reordering;
@@ -809,17 +1271,17 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
       const section = c.createDiv({ cls: "rv-folder-section" });
       const head = section.createDiv({ cls: "rv-folder-head" });
-      (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
+      (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
       head.createSpan({ text: (_b = folder == null ? void 0 : folder.name) != null ? _b : folderPath });
-      if (folder instanceof import_obsidian.TFolder) {
+      if (folder instanceof import_obsidian2.TFolder) {
         const menuBtn2 = head.createEl("button", {
           cls: "rv-icon-btn rv-head-menu"
         });
-        (0, import_obsidian.setIcon)(menuBtn2, "more-vertical");
+        (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
         menuBtn2.setAttribute("aria-label", "More options");
         menuBtn2.onclick = (e) => {
           e.stopPropagation();
-          const menu = new import_obsidian.Menu();
+          const menu = new import_obsidian2.Menu();
           menu.addItem(
             (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
@@ -827,7 +1289,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
         };
       }
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      if (folder instanceof import_obsidian.TFolder) {
+      if (folder instanceof import_obsidian2.TFolder) {
         const count = this.renderFolderTree(fileList, folder);
         if (count === 0) {
           fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
@@ -839,10 +1301,10 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     if (project.notes.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section" });
       const head = section.createDiv({ cls: "rv-folder-head" });
-      (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
+      (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
       head.createSpan({ text: "Notes" });
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      const looseNotes = project.notes.map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile).sort((a, b) => a.basename.localeCompare(b.basename));
+      const looseNotes = project.notes.map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian2.TFile).sort((a, b) => a.basename.localeCompare(b.basename));
       for (const file of looseNotes)
         this.renderFileItem(fileList, file);
     }
@@ -855,7 +1317,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const activePaneId = (_a = project.activePaneId) != null ? _a : null;
     const section = c.createDiv({ cls: "rv-folder-section rv-panes-section" });
     const head = section.createDiv({ cls: "rv-folder-head" });
-    (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
+    (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
     const list = section.createDiv({ cls: "rv-file-list" });
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
@@ -873,7 +1335,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const item = list.createDiv({ cls: "rv-file-item rv-pane-item" });
     if (isActive)
       item.addClass("is-active");
-    (0, import_obsidian.setIcon)(
+    (0, import_obsidian2.setIcon)(
       item.createSpan({ cls: "rv-file-icon" }),
       paneId ? "gallery-vertical" : "home"
     );
@@ -882,11 +1344,11 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     if (!paneId)
       return;
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
-    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "Pane options");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
-      const menu = new import_obsidian.Menu();
+      const menu = new import_obsidian2.Menu();
       menu.addItem(
         (i) => i.setTitle("Rename").setIcon("pencil").onClick(
           () => new PromptModal(
@@ -911,11 +1373,11 @@ var ProjectContentView = class extends import_obsidian.ItemView {
   }
   renderFileItem(container, file) {
     const item = container.createDiv({ cls: "rv-file-item" });
-    (0, import_obsidian.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
+    (0, import_obsidian2.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
-    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
@@ -930,8 +1392,8 @@ var ProjectContentView = class extends import_obsidian.ItemView {
    */
   renderFolderTree(container, folder) {
     const children = [...folder.children];
-    const files = children.filter((c) => c instanceof import_obsidian.TFile && c.extension === "md").sort((a, b) => a.basename.localeCompare(b.basename));
-    const subfolders = children.filter((c) => c instanceof import_obsidian.TFolder).sort((a, b) => a.name.localeCompare(b.name));
+    const files = children.filter((c) => c instanceof import_obsidian2.TFile && c.extension === "md").sort((a, b) => a.basename.localeCompare(b.basename));
+    const subfolders = children.filter((c) => c instanceof import_obsidian2.TFolder).sort((a, b) => a.name.localeCompare(b.name));
     let count = 0;
     for (const f of files) {
       this.renderFileItem(container, f);
@@ -949,7 +1411,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
   showFileMenu(e, file, btn) {
     var _a;
     const project = this.plugin.getActiveProject();
-    const menu = new import_obsidian.Menu();
+    const menu = new import_obsidian2.Menu();
     if (project) {
       const pinned = ((_a = project.pinned) != null ? _a : []).includes(file.path);
       menu.addItem(
@@ -1025,12 +1487,12 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     return found;
   }
 };
-var RenameModal = class extends import_obsidian.Modal {
+var RenameModal = class extends import_obsidian2.Modal {
   constructor(app, item) {
     super(app);
     this.item = item;
-    this.isFile = item instanceof import_obsidian.TFile;
-    this.value = item instanceof import_obsidian.TFile ? item.basename : item.name;
+    this.isFile = item instanceof import_obsidian2.TFile;
+    this.value = item instanceof import_obsidian2.TFile ? item.basename : item.name;
   }
   onOpen() {
     const { contentEl } = this;
@@ -1039,7 +1501,7 @@ var RenameModal = class extends import_obsidian.Modal {
       text: this.isFile ? "Rename note" : "Rename folder"
     });
     let inputEl = null;
-    new import_obsidian.Setting(contentEl).setName("New name").addText((t) => {
+    new import_obsidian2.Setting(contentEl).setName("New name").addText((t) => {
       t.setValue(this.value).onChange((v) => this.value = v);
       inputEl = t.inputEl;
       t.inputEl.addEventListener("keydown", (e) => {
@@ -1063,12 +1525,12 @@ var RenameModal = class extends import_obsidian.Modal {
     var _a;
     const name = this.value.trim();
     if (!name) {
-      new import_obsidian.Notice("Name is required");
+      new import_obsidian2.Notice("Name is required");
       return;
     }
     const parent = (_a = this.item.parent) == null ? void 0 : _a.path;
     const dir = parent && parent !== "/" ? `${parent}/` : "";
-    const ext = this.item instanceof import_obsidian.TFile ? `.${this.item.extension}` : "";
+    const ext = this.item instanceof import_obsidian2.TFile ? `.${this.item.extension}` : "";
     const newPath = `${dir}${name}${ext}`;
     if (newPath === this.item.path) {
       this.close();
@@ -1077,7 +1539,7 @@ var RenameModal = class extends import_obsidian.Modal {
     try {
       await this.app.fileManager.renameFile(this.item, newPath);
     } catch (e) {
-      new import_obsidian.Notice(`Rename failed: ${e.message}`);
+      new import_obsidian2.Notice(`Rename failed: ${e.message}`);
       return;
     }
     this.close();
@@ -1086,14 +1548,14 @@ var RenameModal = class extends import_obsidian.Modal {
 function countMarkdown(folder) {
   let n = 0;
   for (const child of folder.children) {
-    if (child instanceof import_obsidian.TFolder)
+    if (child instanceof import_obsidian2.TFolder)
       n += countMarkdown(child);
-    else if (child instanceof import_obsidian.TFile && child.extension === "md")
+    else if (child instanceof import_obsidian2.TFile && child.extension === "md")
       n++;
   }
   return n;
 }
-var ProjectEditModal = class extends import_obsidian.Modal {
+var ProjectEditModal = class extends import_obsidian2.Modal {
   constructor(app, plugin, project) {
     var _a, _b, _c, _d;
     super(app);
@@ -1114,13 +1576,13 @@ var ProjectEditModal = class extends import_obsidian.Modal {
     contentEl.createEl("h3", {
       text: this.project ? "Edit project" : "New project"
     });
-    new import_obsidian.Setting(contentEl).setName("Name").addText(
+    new import_obsidian2.Setting(contentEl).setName("Name").addText(
       (t) => t.setPlaceholder("Project name").setValue(this.name).onChange((v) => this.name = v)
     );
-    new import_obsidian.Setting(contentEl).setName("Description").addTextArea(
+    new import_obsidian2.Setting(contentEl).setName("Description").addTextArea(
       (t) => t.setPlaceholder("What is this project about?").setValue(this.description).onChange((v) => this.description = v)
     );
-    new import_obsidian.Setting(contentEl).setName("Folders").setDesc("Folders included in this project").addButton(
+    new import_obsidian2.Setting(contentEl).setName("Folders").setDesc("Folders included in this project").addButton(
       (b) => b.setButtonText("Add folder").onClick(() => {
         new FolderSuggestModal(this.app, (folder) => {
           if (!this.folders.includes(folder.path)) {
@@ -1134,7 +1596,7 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       this.folders = this.folders.filter((x) => x !== path);
       this.renderForm();
     });
-    new import_obsidian.Setting(contentEl).setName("Notes").setDesc("Specific notes included in this project").addButton(
+    new import_obsidian2.Setting(contentEl).setName("Notes").setDesc("Specific notes included in this project").addButton(
       (b) => b.setButtonText("Add note").onClick(() => {
         new FileSuggestModal(this.app, (file) => {
           if (!this.notes.includes(file.path))
@@ -1164,13 +1626,13 @@ var ProjectEditModal = class extends import_obsidian.Modal {
       const row = list.createDiv({ cls: "rv-modal-row" });
       row.createSpan({ cls: "rv-modal-row-path", text: path });
       const rm = row.createEl("button", { cls: "rv-icon-btn" });
-      (0, import_obsidian.setIcon)(rm, "x");
+      (0, import_obsidian2.setIcon)(rm, "x");
       rm.onclick = () => onRemove(path);
     }
   }
   async save() {
     if (!this.name.trim()) {
-      new import_obsidian.Notice("Project name is required");
+      new import_obsidian2.Notice("Project name is required");
       return;
     }
     if (this.project) {
@@ -1197,7 +1659,7 @@ var ProjectEditModal = class extends import_obsidian.Modal {
     this.close();
   }
 };
-var FolderSuggestModal = class extends import_obsidian.FuzzySuggestModal {
+var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   constructor(app, onChoose) {
     super(app);
     this.onChoose = onChoose;
@@ -1205,8 +1667,8 @@ var FolderSuggestModal = class extends import_obsidian.FuzzySuggestModal {
   }
   getItems() {
     const folders = [];
-    import_obsidian.Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
-      if (f instanceof import_obsidian.TFolder)
+    import_obsidian2.Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
+      if (f instanceof import_obsidian2.TFolder)
         folders.push(f);
     });
     return folders;
@@ -1218,7 +1680,7 @@ var FolderSuggestModal = class extends import_obsidian.FuzzySuggestModal {
     this.onChoose(item);
   }
 };
-var FileSuggestModal = class extends import_obsidian.FuzzySuggestModal {
+var FileSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   constructor(app, onChoose) {
     super(app);
     this.onChoose = onChoose;
@@ -1234,7 +1696,7 @@ var FileSuggestModal = class extends import_obsidian.FuzzySuggestModal {
     this.onChoose(item);
   }
 };
-var ConfirmModal = class extends import_obsidian.Modal {
+var ConfirmModal = class extends import_obsidian2.Modal {
   constructor(app, message, onConfirm) {
     super(app);
     this.message = message;
@@ -1253,7 +1715,27 @@ var ConfirmModal = class extends import_obsidian.Modal {
     no.onclick = () => this.close();
   }
 };
-var PromptModal = class extends import_obsidian.Modal {
+var ChoiceModal = class extends import_obsidian2.Modal {
+  constructor(app, titleText, choices) {
+    super(app);
+    this.titleText = titleText;
+    this.choices = choices;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: this.titleText });
+    const wrap = contentEl.createDiv({ cls: "rv-choice-list" });
+    for (const ch of this.choices) {
+      const b = wrap.createEl("button", { text: ch.label });
+      b.onclick = () => {
+        this.close();
+        ch.cb();
+      };
+    }
+  }
+};
+var PromptModal = class extends import_obsidian2.Modal {
   constructor(app, titleText, defaultValue, onSubmit) {
     super(app);
     this.titleText = titleText;
@@ -1265,7 +1747,7 @@ var PromptModal = class extends import_obsidian.Modal {
     contentEl.addClass("recent-view-modal");
     contentEl.createEl("h3", { text: this.titleText });
     let inputEl = null;
-    new import_obsidian.Setting(contentEl).setName("Name").addText((t) => {
+    new import_obsidian2.Setting(contentEl).setName("Name").addText((t) => {
       t.setValue(this.value).onChange((v) => this.value = v);
       inputEl = t.inputEl;
       t.inputEl.addEventListener("keydown", (e) => {
@@ -1288,14 +1770,14 @@ var PromptModal = class extends import_obsidian.Modal {
   submit() {
     const v = this.value.trim();
     if (!v) {
-      new import_obsidian.Notice("Name is required");
+      new import_obsidian2.Notice("Name is required");
       return;
     }
     this.onSubmit(v);
     this.close();
   }
 };
-var RecentViewSettingTab = class extends import_obsidian.PluginSettingTab {
+var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1303,7 +1785,7 @@ var RecentViewSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Data note path").setDesc(
+    new import_obsidian2.Setting(containerEl).setName("Data note path").setDesc(
       "Vault-relative path of the note that stores this vault's projects. Stored inside the vault so the data is per-vault and travels with it."
     ).addText(
       (text) => text.setPlaceholder(DEFAULT_SETTINGS.dataNotePath).setValue(this.plugin.settings.dataNotePath).onChange(async (value) => {
@@ -1312,6 +1794,46 @@ var RecentViewSettingTab = class extends import_obsidian.PluginSettingTab {
           return;
         this.plugin.settings.dataNotePath = next;
         await this.plugin.persistNow();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Google Drive").setHeading();
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Create an OAuth client (type: Desktop app) in Google Cloud Console, enable the Google Drive API, then paste the Client ID and Secret below and click Connect. Desktop only."
+    });
+    new import_obsidian2.Setting(containerEl).setName("Client ID").addText(
+      (text) => text.setValue(this.plugin.settings.gdriveClientId).onChange(async (v) => {
+        this.plugin.settings.gdriveClientId = v.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Client Secret").addText((text) => {
+      text.inputEl.type = "password";
+      text.setValue(this.plugin.settings.gdriveClientSecret).onChange(async (v) => {
+        this.plugin.settings.gdriveClientSecret = v.trim();
+        await this.plugin.saveSettings();
+      });
+    });
+    const connected = this.plugin.drive.isConnected();
+    new import_obsidian2.Setting(containerEl).setName("Connection").setDesc(connected ? "Connected to Google Drive." : "Not connected.").addButton(
+      (b) => b.setButtonText(connected ? "Reconnect" : "Connect").setCta().onClick(async () => {
+        if (!isDesktop()) {
+          new import_obsidian2.Notice("Google Drive sign-in is desktop-only.");
+          return;
+        }
+        try {
+          new import_obsidian2.Notice("Opening Google sign-in in your browser\u2026");
+          await this.plugin.drive.connect();
+          new import_obsidian2.Notice("Connected to Google Drive.");
+          this.display();
+        } catch (e) {
+          new import_obsidian2.Notice(`Google Drive: ${e.message}`);
+        }
+      })
+    ).addExtraButton(
+      (b) => b.setIcon("log-out").setTooltip("Disconnect").onClick(async () => {
+        await this.plugin.drive.disconnect();
+        this.display();
       })
     );
   }
