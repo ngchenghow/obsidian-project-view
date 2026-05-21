@@ -60,6 +60,23 @@ function parseDataNote(content) {
     return null;
   }
 }
+function showMenu(menu, event, paneEl, btn) {
+  btn == null ? void 0 : btn.addClass("is-active");
+  const onPaneDown = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    menu.hide();
+  };
+  menu.onHide(() => {
+    btn == null ? void 0 : btn.removeClass("is-active");
+    paneEl.removeEventListener("mousedown", onPaneDown, true);
+  });
+  menu.showAtMouseEvent(event);
+  window.setTimeout(
+    () => paneEl.addEventListener("mousedown", onPaneDown, true),
+    0
+  );
+}
 var RecentViewPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
@@ -581,7 +598,7 @@ var ProjectListView = class extends import_obsidian.ItemView {
             ).open()
           )
         );
-        menu.showAtMouseEvent(e);
+        showMenu(menu, e, this.contentEl, menuBtn);
       };
       box.onclick = () => void this.plugin.openProject(project);
     }
@@ -623,13 +640,11 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
-      menuBtn.addClass("is-active");
       const menu = new import_obsidian.Menu();
       menu.addItem(
         (item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => this.render())
       );
-      menu.onHide(() => menuBtn.removeClass("is-active"));
-      menu.showAtMouseEvent(e);
+      showMenu(menu, e, this.contentEl, menuBtn);
     };
     if (!project) {
       c.createDiv({
@@ -652,13 +667,10 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       const menuBtn2 = head.createEl("button", {
         cls: "rv-icon-btn rv-head-menu"
       });
-      if (this.reordering)
-        menuBtn2.addClass("is-active");
       (0, import_obsidian.setIcon)(menuBtn2, "more-vertical");
       menuBtn2.setAttribute("aria-label", "More options");
       menuBtn2.onclick = (e) => {
         e.stopPropagation();
-        menuBtn2.addClass("is-active");
         const menu = new import_obsidian.Menu();
         menu.addItem(
           (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder").setIcon(this.reordering ? "check" : "arrow-up-down").onClick(() => {
@@ -666,8 +678,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
             this.render();
           })
         );
-        menu.onHide(() => menuBtn2.removeClass("is-active"));
-        menu.showAtMouseEvent(e);
+        showMenu(menu, e, this.contentEl, menuBtn2);
       };
       const fileList = section.createDiv({ cls: "rv-file-list" });
       for (const file of pinnedFiles) {
@@ -692,13 +703,11 @@ var ProjectContentView = class extends import_obsidian.ItemView {
         menuBtn2.setAttribute("aria-label", "More options");
         menuBtn2.onclick = (e) => {
           e.stopPropagation();
-          menuBtn2.addClass("is-active");
           const menu = new import_obsidian.Menu();
           menu.addItem(
             (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
-          menu.onHide(() => menuBtn2.removeClass("is-active"));
-          menu.showAtMouseEvent(e);
+          showMenu(menu, e, this.contentEl, menuBtn2);
         };
       }
       const fileList = section.createDiv({ cls: "rv-file-list" });
@@ -761,7 +770,6 @@ var ProjectContentView = class extends import_obsidian.ItemView {
   }
   showFileMenu(e, file, btn) {
     var _a;
-    btn.addClass("is-active");
     const project = this.plugin.getActiveProject();
     const menu = new import_obsidian.Menu();
     if (project) {
@@ -773,8 +781,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     menu.addItem(
       (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, file).open())
     );
-    menu.onHide(() => btn.removeClass("is-active"));
-    menu.showAtMouseEvent(e);
+    showMenu(menu, e, this.contentEl, btn);
   }
   /** Make a pinned item draggable so the pinned list can be reordered. */
   makePinDraggable(item, file, project) {

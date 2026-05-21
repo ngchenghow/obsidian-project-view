@@ -86,6 +86,35 @@ function parseDataNote(content: string): RecentViewData | null {
   }
 }
 
+/**
+ * Show a menu at the click position. Keeps the triggering button highlighted
+ * while open, and closes the menu when the user clicks anywhere else in the
+ * same pane (consuming that click so it doesn't also trigger the item under it).
+ */
+function showMenu(
+  menu: Menu,
+  event: MouseEvent,
+  paneEl: HTMLElement,
+  btn?: HTMLElement
+): void {
+  btn?.addClass("is-active");
+  const onPaneDown = (ev: MouseEvent) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    menu.hide();
+  };
+  menu.onHide(() => {
+    btn?.removeClass("is-active");
+    paneEl.removeEventListener("mousedown", onPaneDown, true);
+  });
+  menu.showAtMouseEvent(event);
+  // Added on the next tick so the click that opened the menu isn't caught.
+  window.setTimeout(
+    () => paneEl.addEventListener("mousedown", onPaneDown, true),
+    0
+  );
+}
+
 export default class RecentViewPlugin extends Plugin {
   data: RecentViewData = { projects: [], activeProjectId: null };
   settings: RecentViewSettings = { ...DEFAULT_SETTINGS };
@@ -684,7 +713,7 @@ class ProjectListView extends ItemView {
               ).open()
             )
         );
-        menu.showAtMouseEvent(e);
+        showMenu(menu, e, this.contentEl, menuBtn);
       };
 
       box.onclick = () => void this.plugin.openProject(project);
@@ -735,7 +764,6 @@ class ProjectContentView extends ItemView {
     setIcon(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
-      menuBtn.addClass("is-active");
       const menu = new Menu();
       menu.addItem((item) =>
         item
@@ -743,8 +771,7 @@ class ProjectContentView extends ItemView {
           .setIcon("refresh-cw")
           .onClick(() => this.render())
       );
-      menu.onHide(() => menuBtn.removeClass("is-active"));
-      menu.showAtMouseEvent(e);
+      showMenu(menu, e, this.contentEl, menuBtn);
     };
 
     if (!project) {
@@ -773,13 +800,10 @@ class ProjectContentView extends ItemView {
       const menuBtn = head.createEl("button", {
         cls: "rv-icon-btn rv-head-menu",
       });
-      // Keep the menu visible while reordering so "Done" is easy to reach.
-      if (this.reordering) menuBtn.addClass("is-active");
       setIcon(menuBtn, "more-vertical");
       menuBtn.setAttribute("aria-label", "More options");
       menuBtn.onclick = (e) => {
         e.stopPropagation();
-        menuBtn.addClass("is-active");
         const menu = new Menu();
         menu.addItem((i) =>
           i
@@ -790,8 +814,7 @@ class ProjectContentView extends ItemView {
               this.render();
             })
         );
-        menu.onHide(() => menuBtn.removeClass("is-active"));
-        menu.showAtMouseEvent(e);
+        showMenu(menu, e, this.contentEl, menuBtn);
       };
 
       const fileList = section.createDiv({ cls: "rv-file-list" });
@@ -818,7 +841,6 @@ class ProjectContentView extends ItemView {
         menuBtn.setAttribute("aria-label", "More options");
         menuBtn.onclick = (e) => {
           e.stopPropagation();
-          menuBtn.addClass("is-active");
           const menu = new Menu();
           menu.addItem((i) =>
             i
@@ -826,8 +848,7 @@ class ProjectContentView extends ItemView {
               .setIcon("pencil")
               .onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
-          menu.onHide(() => menuBtn.removeClass("is-active"));
-          menu.showAtMouseEvent(e);
+          showMenu(menu, e, this.contentEl, menuBtn);
         };
       }
 
@@ -901,7 +922,6 @@ class ProjectContentView extends ItemView {
   }
 
   private showFileMenu(e: MouseEvent, file: TFile, btn: HTMLElement): void {
-    btn.addClass("is-active");
     const project = this.plugin.getActiveProject();
     const menu = new Menu();
     if (project) {
@@ -919,8 +939,7 @@ class ProjectContentView extends ItemView {
         .setIcon("pencil")
         .onClick(() => new RenameModal(this.plugin.app, file).open())
     );
-    menu.onHide(() => btn.removeClass("is-active"));
-    menu.showAtMouseEvent(e);
+    showMenu(menu, e, this.contentEl, btn);
   }
 
   /** Make a pinned item draggable so the pinned list can be reordered. */
