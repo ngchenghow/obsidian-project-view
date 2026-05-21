@@ -851,6 +851,33 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /** Re-download the project's linked Drive folder into its local folder. */
+  async downloadProjectFromDrive(project: Project): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    new Notice(`Downloading "${project.name}" from Google Drive…`);
+    try {
+      const n = await this.drive.downloadFolder(
+        project.driveFolderId,
+        project.driveLocalFolder
+      );
+      new Notice(`Downloaded ${n} file(s) from Google Drive.`);
+      this.refreshContentView();
+    } catch (e) {
+      new Notice(`Google Drive download failed: ${(e as Error).message}`);
+    }
+  }
+
   /** Upload a single file to its matching place in the project's Drive folder. */
   async uploadFileToDrive(project: Project, file: TFile): Promise<void> {
     if (!isDesktop()) {
@@ -1042,6 +1069,20 @@ class ProjectContentView extends ItemView {
                 (name) => void this.plugin.addPane(project, name)
               ).open()
             )
+        );
+      }
+      if (project?.driveFolderId) {
+        menu.addItem((item) =>
+          item
+            .setTitle("Download from Google Drive")
+            .setIcon("cloud-download")
+            .onClick(() => void this.plugin.downloadProjectFromDrive(project))
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Upload to Google Drive")
+            .setIcon("cloud-upload")
+            .onClick(() => void this.plugin.uploadProjectToDrive(project))
         );
       }
       menu.addItem((item) =>

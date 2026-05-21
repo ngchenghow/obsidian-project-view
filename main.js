@@ -1066,6 +1066,32 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       new import_obsidian2.Notice(`Google Drive upload failed: ${e.message}`);
     }
   }
+  /** Re-download the project's linked Drive folder into its local folder. */
+  async downloadProjectFromDrive(project) {
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    new import_obsidian2.Notice(`Downloading "${project.name}" from Google Drive\u2026`);
+    try {
+      const n = await this.drive.downloadFolder(
+        project.driveFolderId,
+        project.driveLocalFolder
+      );
+      new import_obsidian2.Notice(`Downloaded ${n} file(s) from Google Drive.`);
+      this.refreshContentView();
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive download failed: ${e.message}`);
+    }
+  }
   /** Upload a single file to its matching place in the project's Drive folder. */
   async uploadFileToDrive(project, file) {
     var _a;
@@ -1222,6 +1248,14 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
               (name) => void this.plugin.addPane(project, name)
             ).open()
           )
+        );
+      }
+      if (project == null ? void 0 : project.driveFolderId) {
+        menu.addItem(
+          (item) => item.setTitle("Download from Google Drive").setIcon("cloud-download").onClick(() => void this.plugin.downloadProjectFromDrive(project))
+        );
+        menu.addItem(
+          (item) => item.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadProjectToDrive(project))
         );
       }
       menu.addItem(
