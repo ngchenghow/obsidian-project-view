@@ -490,7 +490,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       this.app.workspace.on("layout-change", () => this.onLayoutChange())
     );
     this.app.workspace.onLayoutReady(() => {
-      this.activateListView();
+      this.arrangeLeftSidebar();
       const active = this.getActiveProject();
       if (active)
         void this.openProject(active);
@@ -666,13 +666,36 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)[0];
     if (!leaf) {
-      const left = workspace.getLeftLeaf(false);
-      if (!left)
-        return;
-      leaf = left;
+      const fileExplorer = workspace.getLeavesOfType("file-explorer")[0];
+      if (fileExplorer) {
+        leaf = workspace.createLeafBySplit(fileExplorer, "horizontal", true);
+      } else {
+        const left = workspace.getLeftLeaf(false);
+        if (!left)
+          return;
+        leaf = left;
+      }
       await leaf.setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true });
     }
     workspace.revealLeaf(leaf);
+  }
+  /**
+   * Dock the Projects list above the native File Explorer in the left sidebar
+   * (so the explorer is at the bottom). Re-creates the list leaf in the right
+   * spot; the list view is rebuilt from data so nothing is lost.
+   */
+  arrangeLeftSidebar() {
+    const { workspace } = this.app;
+    const fileExplorer = workspace.getLeavesOfType("file-explorer")[0];
+    if (!fileExplorer) {
+      void this.activateListView();
+      return;
+    }
+    for (const l of workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)) {
+      l.detach();
+    }
+    const leaf = workspace.createLeafBySplit(fileExplorer, "horizontal", true);
+    void leaf.setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true }).then(() => workspace.revealLeaf(leaf));
   }
   async activateContentView() {
     const { workspace } = this.app;
