@@ -89,7 +89,6 @@
   justify-content: center;
   box-sizing: border-box;
   padding: 4px;
-  margin: 0;
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
@@ -227,7 +226,6 @@
 
 .rv-item-menu {
   flex-shrink: 0;
-  padding: 2px;
   opacity: 0;
 }
 
@@ -244,7 +242,6 @@
 .rv-head-menu {
   margin-left: auto;
   flex-shrink: 0;
-  padding: 2px;
   opacity: 0;
 }
 
