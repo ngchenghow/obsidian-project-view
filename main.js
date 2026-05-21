@@ -73,7 +73,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
   }
   async onload() {
     await this.loadAll();
-    document.body.addClass("rv-managing-panes");
     this.addSettingTab(new RecentViewSettingTab(this.app, this));
     this.registerView(
       VIEW_TYPE_PROJECT_LIST,
@@ -124,7 +123,6 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
   }
   onunload() {
-    document.body.removeClass("rv-managing-panes");
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;

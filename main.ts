@@ -95,9 +95,6 @@ export default class RecentViewPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadAll();
 
-    // Lets the stylesheet hide root-level resize handles between project panes.
-    document.body.addClass("rv-managing-panes");
-
     this.addSettingTab(new RecentViewSettingTab(this.app, this));
 
     this.registerView(
@@ -164,7 +161,6 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   onunload(): void {
-    document.body.removeClass("rv-managing-panes");
     // Flush any debounced note write so nothing is lost on disable/close.
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
