@@ -880,6 +880,40 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       this.refreshContentView();
     }
   }
+  /** Switch to a pane and open all markdown notes in a folder as tabs in it. */
+  async openFolderInPane(project, paneId, folder) {
+    const files = [];
+    import_obsidian2.Vault.recurseChildren(folder, (f) => {
+      if (f instanceof import_obsidian2.TFile && f.extension === "md")
+        files.push(f);
+    });
+    files.sort((a, b) => a.basename.localeCompare(b.basename));
+    await this.showPane(project, paneId);
+    await this.openFilesInActivePane(files);
+  }
+  /** Switch to a pane and open a single note in it. */
+  async openNoteInPane(project, paneId, file) {
+    await this.showPane(project, paneId);
+    await this.openFilesInActivePane([file]);
+  }
+  async openFilesInActivePane(files) {
+    const group = this.getActiveGroup();
+    if (!group)
+      return;
+    this.focusActiveGroup();
+    for (const file of files) {
+      let existing = null;
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        var _a;
+        if (!existing && this.leafInGroup(leaf, group) && ((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === file.path) {
+          existing = leaf;
+        }
+      });
+      if (existing)
+        continue;
+      await this.app.workspace.getLeaf("tab").openFile(file);
+    }
+  }
   /** The container element of a tab group, or null if it's gone. */
   groupContainer(group) {
     const el = group.containerEl;
@@ -1418,8 +1452,6 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     );
     item.createSpan({ cls: "rv-file-name", text: name });
     item.onclick = () => void this.plugin.showPane(project, paneId);
-    if (!paneId)
-      return;
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
     (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "Pane options");
@@ -1427,24 +1459,42 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
       menu.addItem(
-        (i) => i.setTitle("Rename").setIcon("pencil").onClick(
-          () => new PromptModal(
+        (i) => i.setTitle("Open folder's notes\u2026").setIcon("folder-open").onClick(
+          () => new FolderSuggestModal(
             this.plugin.app,
-            "Rename pane",
-            name,
-            (v) => void this.plugin.renamePaneItem(project, paneId, v)
+            (folder) => void this.plugin.openFolderInPane(project, paneId, folder)
           ).open()
         )
       );
       menu.addItem(
-        (i) => i.setTitle("Delete pane").setIcon("trash-2").onClick(
-          () => new ConfirmModal(
+        (i) => i.setTitle("Open note\u2026").setIcon("file").onClick(
+          () => new FileSuggestModal(
             this.plugin.app,
-            `Delete pane "${name}"?`,
-            () => void this.plugin.deletePaneItem(project, paneId)
+            (file) => void this.plugin.openNoteInPane(project, paneId, file)
           ).open()
         )
       );
+      if (paneId) {
+        menu.addItem(
+          (i) => i.setTitle("Rename").setIcon("pencil").onClick(
+            () => new PromptModal(
+              this.plugin.app,
+              "Rename pane",
+              name,
+              (v) => void this.plugin.renamePaneItem(project, paneId, v)
+            ).open()
+          )
+        );
+        menu.addItem(
+          (i) => i.setTitle("Delete pane").setIcon("trash-2").onClick(
+            () => new ConfirmModal(
+              this.plugin.app,
+              `Delete pane "${name}"?`,
+              () => void this.plugin.deletePaneItem(project, paneId)
+            ).open()
+          )
+        );
+      }
       showMenu(menu, e, this.contentEl, menuBtn);
     };
   }

@@ -662,6 +662,51 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /** Switch to a pane and open all markdown notes in a folder as tabs in it. */
+  async openFolderInPane(
+    project: Project,
+    paneId: string | null,
+    folder: TFolder
+  ): Promise<void> {
+    const files: TFile[] = [];
+    Vault.recurseChildren(folder, (f) => {
+      if (f instanceof TFile && f.extension === "md") files.push(f);
+    });
+    files.sort((a, b) => a.basename.localeCompare(b.basename));
+    await this.showPane(project, paneId);
+    await this.openFilesInActivePane(files);
+  }
+
+  /** Switch to a pane and open a single note in it. */
+  async openNoteInPane(
+    project: Project,
+    paneId: string | null,
+    file: TFile
+  ): Promise<void> {
+    await this.showPane(project, paneId);
+    await this.openFilesInActivePane([file]);
+  }
+
+  private async openFilesInActivePane(files: TFile[]): Promise<void> {
+    const group = this.getActiveGroup();
+    if (!group) return;
+    this.focusActiveGroup();
+    for (const file of files) {
+      let existing: WorkspaceLeaf | null = null;
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (
+          !existing &&
+          this.leafInGroup(leaf, group) &&
+          leaf.getViewState().state?.file === file.path
+        ) {
+          existing = leaf;
+        }
+      });
+      if (existing) continue;
+      await this.app.workspace.getLeaf("tab").openFile(file);
+    }
+  }
+
   /** The container element of a tab group, or null if it's gone. */
   private groupContainer(group: WorkspaceParent): HTMLElement | null {
     const el = (group as unknown as { containerEl?: HTMLElement }).containerEl;
@@ -1289,8 +1334,6 @@ class ProjectContentView extends ItemView {
     item.createSpan({ cls: "rv-file-name", text: name });
     item.onclick = () => void this.plugin.showPane(project, paneId);
 
-    if (!paneId) return; // The main pane can't be renamed or deleted.
-
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
     setIcon(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "Pane options");
@@ -1299,26 +1342,52 @@ class ProjectContentView extends ItemView {
       const menu = new Menu();
       menu.addItem((i) =>
         i
-          .setTitle("Rename")
-          .setIcon("pencil")
+          .setTitle("Open folder's notes…")
+          .setIcon("folder-open")
           .onClick(() =>
-            new PromptModal(this.plugin.app, "Rename pane", name, (v) =>
-              void this.plugin.renamePaneItem(project, paneId, v)
+            new FolderSuggestModal(
+              this.plugin.app,
+              (folder) =>
+                void this.plugin.openFolderInPane(project, paneId, folder)
             ).open()
           )
       );
       menu.addItem((i) =>
         i
-          .setTitle("Delete pane")
-          .setIcon("trash-2")
+          .setTitle("Open note…")
+          .setIcon("file")
           .onClick(() =>
-            new ConfirmModal(
+            new FileSuggestModal(
               this.plugin.app,
-              `Delete pane "${name}"?`,
-              () => void this.plugin.deletePaneItem(project, paneId)
+              (file) => void this.plugin.openNoteInPane(project, paneId, file)
             ).open()
           )
       );
+      // Rename/Delete only apply to named (non-main) panes.
+      if (paneId) {
+        menu.addItem((i) =>
+          i
+            .setTitle("Rename")
+            .setIcon("pencil")
+            .onClick(() =>
+              new PromptModal(this.plugin.app, "Rename pane", name, (v) =>
+                void this.plugin.renamePaneItem(project, paneId, v)
+              ).open()
+            )
+        );
+        menu.addItem((i) =>
+          i
+            .setTitle("Delete pane")
+            .setIcon("trash-2")
+            .onClick(() =>
+              new ConfirmModal(
+                this.plugin.app,
+                `Delete pane "${name}"?`,
+                () => void this.plugin.deletePaneItem(project, paneId)
+              ).open()
+            )
+        );
+      }
       showMenu(menu, e, this.contentEl, menuBtn);
     };
   }
