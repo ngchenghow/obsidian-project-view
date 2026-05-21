@@ -151,8 +151,10 @@ export default class RecentViewPlugin extends Plugin {
 
   get drive(): GoogleDriveClient {
     if (!this._drive) {
-      this._drive = new GoogleDriveClient(this.app, this.settings, () =>
-        this.saveSettings()
+      this._drive = new GoogleDriveClient(
+        this.app,
+        () => this.settings,
+        () => this.saveSettings()
       );
     }
     return this._drive;
@@ -1835,7 +1837,8 @@ class RecentViewSettingTab extends PluginSettingTab {
               new Notice("Connected to Google Drive.");
               this.display();
             } catch (e) {
-              new Notice(`Google Drive: ${(e as Error).message}`);
+              console.error("[RecentView] Google Drive connect failed", e);
+              new Notice(`Google Drive connect failed: ${(e as Error).message}`, 12000);
             }
           })
       )

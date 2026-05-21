@@ -71,9 +71,14 @@ export class GoogleDriveClient {
 
   constructor(
     private app: App,
-    private store: GDriveAuthStore,
+    private getStore: () => GDriveAuthStore,
     private persist: () => Promise<void>
   ) {}
+
+  /** Always read the live settings object (never a stale captured copy). */
+  private get store(): GDriveAuthStore {
+    return this.getStore();
+  }
 
   isConfigured(): boolean {
     return !!(this.store.gdriveClientId && this.store.gdriveClientSecret);
@@ -109,7 +114,7 @@ export class GoogleDriveClient {
           const err = u.searchParams.get("error");
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(
-            "<html><body style='font-family:sans-serif'>Recent View: Google Drive connected. You can close this tab.</body></html>"
+            "<html><body style='font-family:sans-serif'>Recent View: authorization received. Return to Obsidian to finish connecting, then close this tab.</body></html>"
           );
           server.close();
           if (err) reject(new Error(err));

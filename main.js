@@ -74,12 +74,16 @@ function parseDriveFolderId(input) {
   return null;
 }
 var GoogleDriveClient = class {
-  constructor(app, store, persist) {
+  constructor(app, getStore, persist) {
     this.app = app;
-    this.store = store;
+    this.getStore = getStore;
     this.persist = persist;
     this.accessToken = "";
     this.expiry = 0;
+  }
+  /** Always read the live settings object (never a stale captured copy). */
+  get store() {
+    return this.getStore();
   }
   isConfigured() {
     return !!(this.store.gdriveClientId && this.store.gdriveClientSecret);
@@ -110,7 +114,7 @@ var GoogleDriveClient = class {
           const err = u.searchParams.get("error");
           res2.writeHead(200, { "Content-Type": "text/html" });
           res2.end(
-            "<html><body style='font-family:sans-serif'>Recent View: Google Drive connected. You can close this tab.</body></html>"
+            "<html><body style='font-family:sans-serif'>Recent View: authorization received. Return to Obsidian to finish connecting, then close this tab.</body></html>"
           );
           server.close();
           if (err)
@@ -413,7 +417,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     if (!this._drive) {
       this._drive = new GoogleDriveClient(
         this.app,
-        this.settings,
+        () => this.settings,
         () => this.saveSettings()
       );
     }
@@ -1827,7 +1831,8 @@ var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
           new import_obsidian2.Notice("Connected to Google Drive.");
           this.display();
         } catch (e) {
-          new import_obsidian2.Notice(`Google Drive: ${e.message}`);
+          console.error("[RecentView] Google Drive connect failed", e);
+          new import_obsidian2.Notice(`Google Drive connect failed: ${e.message}`, 12e3);
         }
       })
     ).addExtraButton(
