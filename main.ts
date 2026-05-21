@@ -370,6 +370,26 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshContentView();
   }
 
+  async addFolderToProject(project: Project, folder: TFolder): Promise<void> {
+    if (!project.folders.includes(folder.path)) {
+      project.folders.push(folder.path);
+      await this.persistNow();
+      this.refreshContentView();
+      return;
+    }
+    new Notice("Folder is already in this project.");
+  }
+
+  async addNoteToProject(project: Project, file: TFile): Promise<void> {
+    if (!project.notes.includes(file.path)) {
+      project.notes.push(file.path);
+      await this.persistNow();
+      this.refreshContentView();
+      return;
+    }
+    new Notice("Note is already in this project.");
+  }
+
   /** Update stored paths across all projects when a file/folder is renamed. */
   private handlePathRename(oldPath: string, newPath: string): void {
     const remap = (p: string): string => {
@@ -1298,6 +1318,26 @@ class ProjectContentView extends ItemView {
                 "New pane",
                 `Pane ${project.panes.length + 1}`,
                 (name) => void this.plugin.addPane(project, name)
+              ).open()
+            )
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add folder to project…")
+            .setIcon("folder-plus")
+            .onClick(() =>
+              new FolderSuggestModal(this.plugin.app, (folder) =>
+                void this.plugin.addFolderToProject(project, folder)
+              ).open()
+            )
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add note to project…")
+            .setIcon("file-plus")
+            .onClick(() =>
+              new FileSuggestModal(this.plugin.app, (file) =>
+                void this.plugin.addNoteToProject(project, file)
               ).open()
             )
         );

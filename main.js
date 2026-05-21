@@ -625,6 +625,24 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
+  async addFolderToProject(project, folder) {
+    if (!project.folders.includes(folder.path)) {
+      project.folders.push(folder.path);
+      await this.persistNow();
+      this.refreshContentView();
+      return;
+    }
+    new import_obsidian2.Notice("Folder is already in this project.");
+  }
+  async addNoteToProject(project, file) {
+    if (!project.notes.includes(file.path)) {
+      project.notes.push(file.path);
+      await this.persistNow();
+      this.refreshContentView();
+      return;
+    }
+    new import_obsidian2.Notice("Note is already in this project.");
+  }
   /** Update stored paths across all projects when a file/folder is renamed. */
   handlePathRename(oldPath, newPath) {
     var _a, _b, _c, _d;
@@ -1434,6 +1452,22 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
               "New pane",
               `Pane ${project.panes.length + 1}`,
               (name) => void this.plugin.addPane(project, name)
+            ).open()
+          )
+        );
+        menu.addItem(
+          (item) => item.setTitle("Add folder to project\u2026").setIcon("folder-plus").onClick(
+            () => new FolderSuggestModal(
+              this.plugin.app,
+              (folder) => void this.plugin.addFolderToProject(project, folder)
+            ).open()
+          )
+        );
+        menu.addItem(
+          (item) => item.setTitle("Add note to project\u2026").setIcon("file-plus").onClick(
+            () => new FileSuggestModal(
+              this.plugin.app,
+              (file) => void this.plugin.addNoteToProject(project, file)
             ).open()
           )
         );
