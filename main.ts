@@ -850,6 +850,36 @@ export default class RecentViewPlugin extends Plugin {
       new Notice(`Google Drive upload failed: ${(e as Error).message}`);
     }
   }
+
+  /** Upload a single file to its matching place in the project's Drive folder. */
+  async uploadFileToDrive(project: Project, file: TFile): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = project.driveLocalFolder ?? "";
+    let dirParts: string[] = [];
+    if (local && file.path.startsWith(local + "/")) {
+      const parts = file.path.slice(local.length + 1).split("/");
+      parts.pop(); // drop the file name
+      dirParts = parts;
+    }
+    new Notice(`Uploading "${file.name}" to Google Drive…`);
+    try {
+      await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
+      new Notice(`Uploaded "${file.name}" to Google Drive.`);
+    } catch (e) {
+      new Notice(`Google Drive upload failed: ${(e as Error).message}`);
+    }
+  }
 }
 
 class ProjectListView extends ItemView {
@@ -1262,6 +1292,14 @@ class ProjectContentView extends ItemView {
         .setIcon("pencil")
         .onClick(() => new RenameModal(this.plugin.app, file).open())
     );
+    if (project?.driveFolderId) {
+      menu.addItem((i) =>
+        i
+          .setTitle("Upload to Google Drive")
+          .setIcon("cloud-upload")
+          .onClick(() => void this.plugin.uploadFileToDrive(project, file))
+      );
+    }
     showMenu(menu, e, this.contentEl, btn);
   }
 

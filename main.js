@@ -321,6 +321,31 @@ var GoogleDriveClient = class {
       { method: "PATCH", body: data }
     );
   }
+  /** Ensure a nested folder path exists under a Drive folder; return leaf id. */
+  async ensureSubfolder(parentId, names) {
+    let current = parentId;
+    for (const name of names) {
+      const children = await this.listChildren(current);
+      const match = children.find(
+        (c) => c.name === name && c.mimeType === FOLDER_MIME
+      );
+      current = match ? match.id : await this.createFolder(name, current);
+    }
+    return current;
+  }
+  /** Upload (create or update) one file into rootFolderId/<relDirParts>. */
+  async uploadSingleFile(rootFolderId, file, relDirParts) {
+    const parentId = await this.ensureSubfolder(rootFolderId, relDirParts);
+    const data = await this.app.vault.readBinary(file);
+    const children = await this.listChildren(parentId);
+    const match = children.find(
+      (c) => c.name === file.name && c.mimeType !== FOLDER_MIME
+    );
+    if (match)
+      await this.updateFileContent(match.id, data);
+    else
+      await this.createFile(file.name, parentId, data);
+  }
   /** Recursively upload a vault folder's contents into a Drive folder. */
   async uploadFolder(vaultDir, folderId) {
     const folder = this.app.vault.getAbstractFileByPath(vaultDir);
@@ -1041,6 +1066,36 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       new import_obsidian2.Notice(`Google Drive upload failed: ${e.message}`);
     }
   }
+  /** Upload a single file to its matching place in the project's Drive folder. */
+  async uploadFileToDrive(project, file) {
+    var _a;
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = (_a = project.driveLocalFolder) != null ? _a : "";
+    let dirParts = [];
+    if (local && file.path.startsWith(local + "/")) {
+      const parts = file.path.slice(local.length + 1).split("/");
+      parts.pop();
+      dirParts = parts;
+    }
+    new import_obsidian2.Notice(`Uploading "${file.name}" to Google Drive\u2026`);
+    try {
+      await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
+      new import_obsidian2.Notice(`Uploaded "${file.name}" to Google Drive.`);
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive upload failed: ${e.message}`);
+    }
+  }
 };
 var ProjectListView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
@@ -1372,6 +1427,11 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     menu.addItem(
       (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, file).open())
     );
+    if (project == null ? void 0 : project.driveFolderId) {
+      menu.addItem(
+        (i) => i.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadFileToDrive(project, file))
+      );
+    }
     showMenu(menu, e, this.contentEl, btn);
   }
   /** Make a pinned item draggable so the pinned list can be reordered. */

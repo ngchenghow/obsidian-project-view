@@ -342,6 +342,38 @@ export class GoogleDriveClient {
     );
   }
 
+  /** Ensure a nested folder path exists under a Drive folder; return leaf id. */
+  private async ensureSubfolder(
+    parentId: string,
+    names: string[]
+  ): Promise<string> {
+    let current = parentId;
+    for (const name of names) {
+      const children = await this.listChildren(current);
+      const match = children.find(
+        (c) => c.name === name && c.mimeType === FOLDER_MIME
+      );
+      current = match ? match.id : await this.createFolder(name, current);
+    }
+    return current;
+  }
+
+  /** Upload (create or update) one file into rootFolderId/<relDirParts>. */
+  async uploadSingleFile(
+    rootFolderId: string,
+    file: TFile,
+    relDirParts: string[]
+  ): Promise<void> {
+    const parentId = await this.ensureSubfolder(rootFolderId, relDirParts);
+    const data = await this.app.vault.readBinary(file);
+    const children = await this.listChildren(parentId);
+    const match = children.find(
+      (c) => c.name === file.name && c.mimeType !== FOLDER_MIME
+    );
+    if (match) await this.updateFileContent(match.id, data);
+    else await this.createFile(file.name, parentId, data);
+  }
+
   /** Recursively upload a vault folder's contents into a Drive folder. */
   async uploadFolder(vaultDir: string, folderId: string): Promise<number> {
     const folder = this.app.vault.getAbstractFileByPath(vaultDir);
