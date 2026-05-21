@@ -1,5 +1,14 @@
 /* Recent View plugin styles */
 
+/* With per-project panes, only one root-level tab group is shown at a time,
+   so the resize handles between root groups are not needed and would show as
+   artifacts beside a hidden pane. */
+body.rv-managing-panes
+  .workspace-split.mod-root
+  > .workspace-leaf-resize-handle {
+  display: none;
+}
+
 .recent-view-list .rv-header {
   display: flex;
   align-items: center;

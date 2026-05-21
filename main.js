@@ -67,9 +67,13 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.settings = { ...DEFAULT_SETTINGS };
     this.isActivating = false;
     this.noteWriteTimer = null;
+    // Live tab group (pane) per project, kept alive so switching just shows/hides
+    // panes instead of closing and reopening notes.
+    this.projectGroups = /* @__PURE__ */ new Map();
   }
   async onload() {
     await this.loadAll();
+    document.body.addClass("rv-managing-panes");
     this.addSettingTab(new RecentViewSettingTab(this.app, this));
     this.registerView(
       VIEW_TYPE_PROJECT_LIST,
@@ -110,6 +114,9 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     );
     this.app.workspace.onLayoutReady(() => {
       this.activateListView();
+      const active = this.getActiveProject();
+      if (active)
+        void this.openProject(active);
       const onVaultChange = () => this.refreshContentView();
       this.registerEvent(this.app.vault.on("create", onVaultChange));
       this.registerEvent(this.app.vault.on("delete", onVaultChange));
@@ -117,6 +124,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
   }
   onunload() {
+    document.body.removeClass("rv-managing-panes");
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
@@ -248,52 +256,149 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     }
   }
   /**
-   * Opening a project: close every open tab in the main area, then restore the
-   * notes that were open the last time this project was active.
+   * Open a project: show its live pane (tab group), creating it from the saved
+   * notes the first time. Other projects' panes are hidden, not closed, so
+   * their tabs keep their full editor state.
    */
   async openProject(project) {
-    var _a;
     this.saveActiveProjectTabs();
     this.isActivating = true;
     this.data.activeProjectId = project.id;
     this.refreshListView();
     void this.activateContentView();
-    const existing = [];
-    this.app.workspace.iterateRootLeaves((leaf) => {
-      existing.push(leaf);
+    try {
+      let group = this.getLiveGroup(project.id);
+      if (!group)
+        group = await this.createProjectGroup(project);
+      if (group) {
+        this.projectGroups.set(project.id, group);
+        this.applyGroupVisibility(project.id);
+        this.focusGroup(group);
+      }
+    } catch (e) {
+      console.error("[RecentView] failed to open project pane", e);
+    }
+    await this.persist();
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
+  }
+  /** Build a new tab group for a project from its saved notes. */
+  async createProjectGroup(project) {
+    var _a;
+    const notes = this.resolveNotes(project);
+    const { workspace } = this.app;
+    let firstLeaf;
+    if (!this.hasAnyLiveGroup()) {
+      const existing = [];
+      workspace.iterateRootLeaves((leaf) => {
+        existing.push(leaf);
+      });
+      firstLeaf = (_a = existing[0]) != null ? _a : workspace.getLeaf(false);
+      for (const leaf of existing)
+        if (leaf !== firstLeaf)
+          leaf.detach();
+    } else {
+      const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
+      if (mru)
+        workspace.setActiveLeaf(mru, { focus: false });
+      firstLeaf = workspace.getLeaf("split");
+    }
+    if (notes.length === 0) {
+      await firstLeaf.setViewState({ type: "empty" });
+      return firstLeaf.parent;
+    }
+    const opened = [firstLeaf];
+    await firstLeaf.openFile(notes[0].file, { eState: notes[0].eState });
+    for (let i = 1; i < notes.length; i++) {
+      const leaf = workspace.getLeaf("tab");
+      await leaf.openFile(notes[i].file, { eState: notes[i].eState });
+      opened.push(leaf);
+    }
+    const activeIndex = notes.findIndex((n) => n.active);
+    workspace.setActiveLeaf(opened[activeIndex >= 0 ? activeIndex : 0], {
+      focus: true
     });
-    const notes = project.lastOpenNotes.map((n) => ({
+    return firstLeaf.parent;
+  }
+  resolveNotes(project) {
+    return project.lastOpenNotes.map((n) => ({
       file: this.app.vault.getAbstractFileByPath(n.path),
       eState: n.eState,
       active: n.active === true
     })).filter(
       (n) => n.file instanceof import_obsidian.TFile
     );
-    if (notes.length === 0) {
-      for (const leaf of existing)
-        leaf.detach();
-    } else {
-      const target = (_a = existing[0]) != null ? _a : this.app.workspace.getLeaf(false);
-      for (const leaf of existing) {
-        if (leaf !== target)
-          leaf.detach();
-      }
-      const opened = [];
-      await target.openFile(notes[0].file, { eState: notes[0].eState });
-      opened.push(target);
-      for (let i = 1; i < notes.length; i++) {
-        const leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(notes[i].file, { eState: notes[i].eState });
-        opened.push(leaf);
-      }
-      const activeIndex = notes.findIndex((n) => n.active);
-      const activeLeaf = opened[activeIndex >= 0 ? activeIndex : 0];
-      this.app.workspace.setActiveLeaf(activeLeaf, { focus: true });
+  }
+  /** The container element of a tab group, or null if it's gone. */
+  groupContainer(group) {
+    const el = group.containerEl;
+    return el != null ? el : null;
+  }
+  /** Return the project's tab group if it still exists in the layout. */
+  getLiveGroup(projectId) {
+    if (!projectId)
+      return null;
+    const group = this.projectGroups.get(projectId);
+    if (!group)
+      return null;
+    const el = this.groupContainer(group);
+    if (!el || !el.isConnected) {
+      this.projectGroups.delete(projectId);
+      return null;
     }
-    await this.persist();
-    window.setTimeout(() => {
-      this.isActivating = false;
-    }, 150);
+    return group;
+  }
+  getActiveGroup() {
+    return this.getLiveGroup(this.data.activeProjectId);
+  }
+  hasAnyLiveGroup() {
+    for (const [id] of this.projectGroups) {
+      if (this.getLiveGroup(id))
+        return true;
+    }
+    return false;
+  }
+  leafInGroup(leaf, group) {
+    var _a;
+    let node = leaf;
+    while (node) {
+      if (node === group)
+        return true;
+      node = (_a = node.parent) != null ? _a : null;
+    }
+    return false;
+  }
+  /** Show the active project's pane, hide all others. */
+  applyGroupVisibility(activeId) {
+    for (const [projectId, group] of [...this.projectGroups]) {
+      const el = this.groupContainer(group);
+      if (!el || !el.isConnected) {
+        this.projectGroups.delete(projectId);
+        continue;
+      }
+      if (projectId === activeId) {
+        el.style.display = "";
+        el.style.flexGrow = "1";
+        el.style.flexBasis = "100%";
+        el.style.width = "100%";
+      } else {
+        el.style.display = "none";
+      }
+    }
+  }
+  /** Focus the most recently active leaf inside a group so its tab is shown
+   *  (preserves which tab was active within that pane). */
+  focusGroup(group) {
+    const leaf = this.app.workspace.getMostRecentLeaf(group);
+    if (leaf)
+      this.app.workspace.setActiveLeaf(leaf, { focus: true });
+  }
+  /** Focus the active project's pane (used before opening a note into it). */
+  focusActiveGroup() {
+    const group = this.getActiveGroup();
+    if (group)
+      this.focusGroup(group);
   }
   saveActiveProjectTabs(force = false) {
     var _a;
@@ -302,6 +407,9 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     const project = this.getActiveProject();
     if (!project)
       return -1;
+    const group = this.getLiveGroup(project.id);
+    if (!group)
+      return -1;
     const activeLeaf = this.app.workspace.getMostRecentLeaf(
       this.app.workspace.rootSplit
     );
@@ -309,6 +417,8 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     const open = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       var _a2;
+      if (!this.leafInGroup(leaf, group))
+        return;
       const filePath = (_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file;
       if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
         open.push({
@@ -323,6 +433,17 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     return open.length;
   }
   async deleteProject(project) {
+    const group = this.projectGroups.get(project.id);
+    if (group) {
+      const toClose = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group))
+          toClose.push(leaf);
+      });
+      for (const leaf of toClose)
+        leaf.detach();
+      this.projectGroups.delete(project.id);
+    }
     this.data.projects = this.data.projects.filter((p) => p.id !== project.id);
     if (this.data.activeProjectId === project.id) {
       this.data.activeProjectId = null;
@@ -492,21 +613,27 @@ var ProjectContentView = class extends import_obsidian.ItemView {
   }
   openOrFocus(file) {
     const { workspace } = this.plugin.app;
-    const existing = this.findLeafForFile(file);
+    const group = this.plugin.getActiveGroup();
+    const existing = this.findLeafForFile(file, group);
     if (existing) {
       workspace.setActiveLeaf(existing, { focus: true });
       workspace.revealLeaf(existing);
       return;
     }
+    if (group)
+      this.plugin.focusActiveGroup();
     void workspace.getLeaf("tab").openFile(file);
   }
-  findLeafForFile(file) {
+  findLeafForFile(file, group) {
     let found = null;
     this.plugin.app.workspace.iterateRootLeaves((leaf) => {
       var _a;
-      if (!found && ((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === file.path) {
+      if (found)
+        return;
+      if (group && !this.plugin.leafInGroup(leaf, group))
+        return;
+      if (((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === file.path)
         found = leaf;
-      }
     });
     return found;
   }

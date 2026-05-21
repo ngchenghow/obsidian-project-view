@@ -10,6 +10,7 @@ import {
   TFolder,
   Vault,
   WorkspaceLeaf,
+  WorkspaceParent,
   FuzzySuggestModal,
   setIcon,
   App,
@@ -87,9 +88,15 @@ export default class RecentViewPlugin extends Plugin {
   settings: RecentViewSettings = { ...DEFAULT_SETTINGS };
   private isActivating = false;
   private noteWriteTimer: number | null = null;
+  // Live tab group (pane) per project, kept alive so switching just shows/hides
+  // panes instead of closing and reopening notes.
+  private projectGroups: Map<string, WorkspaceParent> = new Map();
 
   async onload(): Promise<void> {
     await this.loadAll();
+
+    // Lets the stylesheet hide root-level resize handles between project panes.
+    document.body.addClass("rv-managing-panes");
 
     this.addSettingTab(new RecentViewSettingTab(this.app, this));
 
@@ -141,6 +148,11 @@ export default class RecentViewPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.activateListView();
 
+      // Rebuild only the active project's pane on startup (other projects'
+      // panes are recreated lazily the first time they are clicked).
+      const active = this.getActiveProject();
+      if (active) void this.openProject(active);
+
       // Keep the content pane in sync when notes are added/removed/renamed in
       // the vault (e.g. a new note created inside a project folder). Registered
       // after layout is ready so the initial "create" burst is not handled.
@@ -152,6 +164,7 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   onunload(): void {
+    document.body.removeClass("rv-managing-panes");
     // Flush any debounced note write so nothing is lost on disable/close.
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
@@ -297,31 +310,92 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   /**
-   * Opening a project: close every open tab in the main area, then restore the
-   * notes that were open the last time this project was active.
+   * Open a project: show its live pane (tab group), creating it from the saved
+   * notes the first time. Other projects' panes are hidden, not closed, so
+   * their tabs keep their full editor state.
    */
   async openProject(project: Project): Promise<void> {
-    // Persist the outgoing project's tabs while they are still on screen,
-    // before we change activeProjectId or detach anything.
+    // Snapshot the outgoing project's tabs (only if it has a live pane).
     this.saveActiveProjectTabs();
 
     this.isActivating = true;
     this.data.activeProjectId = project.id;
 
-    // Update the selection UI synchronously, before any async tab work that
-    // could throw and leave the highlight stuck on the previous project.
+    // Update the selection UI synchronously.
     this.refreshListView();
     void this.activateContentView();
 
-    // Collect the current main-area leaves.
-    // Note: iterateRootLeaves stops as soon as the callback returns a truthy
-    // value, so the body must not return one (Array.push returns a number).
-    const existing: WorkspaceLeaf[] = [];
-    this.app.workspace.iterateRootLeaves((leaf) => {
-      existing.push(leaf);
-    });
+    try {
+      let group = this.getLiveGroup(project.id);
+      if (!group) group = await this.createProjectGroup(project);
+      if (group) {
+        this.projectGroups.set(project.id, group);
+        this.applyGroupVisibility(project.id);
+        this.focusGroup(group);
+      }
+    } catch (e) {
+      console.error("[RecentView] failed to open project pane", e);
+    }
 
-    const notes = project.lastOpenNotes
+    await this.persist();
+
+    // Release the guard after the layout settles.
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
+  }
+
+  /** Build a new tab group for a project from its saved notes. */
+  private async createProjectGroup(
+    project: Project
+  ): Promise<WorkspaceParent | null> {
+    const notes = this.resolveNotes(project);
+    const { workspace } = this.app;
+
+    let firstLeaf: WorkspaceLeaf;
+    if (!this.hasAnyLiveGroup()) {
+      // No project pane exists yet: adopt the current main area by keeping one
+      // leaf (so a tab group survives) and closing the rest.
+      const existing: WorkspaceLeaf[] = [];
+      workspace.iterateRootLeaves((leaf) => {
+        existing.push(leaf);
+      });
+      firstLeaf = existing[0] ?? workspace.getLeaf(false);
+      for (const leaf of existing) if (leaf !== firstLeaf) leaf.detach();
+    } else {
+      // Another pane is visible: create a brand new tab group beside it. Make a
+      // main-area leaf active first so the split lands in the root, not a side-
+      // bar.
+      const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
+      if (mru) workspace.setActiveLeaf(mru, { focus: false });
+      firstLeaf = workspace.getLeaf("split");
+    }
+
+    if (notes.length === 0) {
+      await firstLeaf.setViewState({ type: "empty" });
+      return firstLeaf.parent;
+    }
+
+    const opened: WorkspaceLeaf[] = [firstLeaf];
+    await firstLeaf.openFile(notes[0].file, { eState: notes[0].eState });
+    for (let i = 1; i < notes.length; i++) {
+      const leaf = workspace.getLeaf("tab");
+      await leaf.openFile(notes[i].file, { eState: notes[i].eState });
+      opened.push(leaf);
+    }
+    const activeIndex = notes.findIndex((n) => n.active);
+    workspace.setActiveLeaf(opened[activeIndex >= 0 ? activeIndex : 0], {
+      focus: true,
+    });
+    return firstLeaf.parent;
+  }
+
+  private resolveNotes(project: Project): {
+    file: TFile;
+    eState: Record<string, unknown> | undefined;
+    active: boolean;
+  }[] {
+    return project.lastOpenNotes
       .map((n) => ({
         file: this.app.vault.getAbstractFileByPath(n.path),
         eState: n.eState,
@@ -334,50 +408,86 @@ export default class RecentViewPlugin extends Plugin {
           active: boolean;
         } => n.file instanceof TFile
       );
+  }
 
-    if (notes.length === 0) {
-      // No notes to restore: close every tab.
-      for (const leaf of existing) leaf.detach();
-    } else {
-      // Keep one existing leaf alive so its tab group (WorkspaceTabs) persists.
-      // A leaf created after detaching *everything* can sit directly in the
-      // root split with no tab-group wrapper, which makes getLeaf("tab") open
-      // splits instead of tabs. Reusing an existing leaf guarantees the
-      // wrapper, so each getLeaf("tab") appends a real tab to the same group.
-      // The saved eState restores each note's scroll position and cursor.
-      const target = existing[0] ?? this.app.workspace.getLeaf(false);
-      for (const leaf of existing) {
-        if (leaf !== target) leaf.detach();
-      }
-      const opened: WorkspaceLeaf[] = [];
-      await target.openFile(notes[0].file, { eState: notes[0].eState });
-      opened.push(target);
-      for (let i = 1; i < notes.length; i++) {
-        const leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(notes[i].file, { eState: notes[i].eState });
-        opened.push(leaf);
-      }
-      // Re-activate the tab that was focused when the project was last left.
-      const activeIndex = notes.findIndex((n) => n.active);
-      const activeLeaf = opened[activeIndex >= 0 ? activeIndex : 0];
-      this.app.workspace.setActiveLeaf(activeLeaf, { focus: true });
+  /** The container element of a tab group, or null if it's gone. */
+  private groupContainer(group: WorkspaceParent): HTMLElement | null {
+    const el = (group as unknown as { containerEl?: HTMLElement }).containerEl;
+    return el ?? null;
+  }
+
+  /** Return the project's tab group if it still exists in the layout. */
+  private getLiveGroup(projectId: string | null): WorkspaceParent | null {
+    if (!projectId) return null;
+    const group = this.projectGroups.get(projectId);
+    if (!group) return null;
+    const el = this.groupContainer(group);
+    if (!el || !el.isConnected) {
+      this.projectGroups.delete(projectId);
+      return null;
     }
+    return group;
+  }
 
-    await this.persist();
+  getActiveGroup(): WorkspaceParent | null {
+    return this.getLiveGroup(this.data.activeProjectId);
+  }
 
-    // Release the guard after the layout settles so restored tabs are not
-    // immediately recorded as an (empty) snapshot mid-transition.
-    window.setTimeout(() => {
-      this.isActivating = false;
-    }, 150);
+  private hasAnyLiveGroup(): boolean {
+    for (const [id] of this.projectGroups) {
+      if (this.getLiveGroup(id)) return true;
+    }
+    return false;
+  }
+
+  leafInGroup(leaf: WorkspaceLeaf, group: WorkspaceParent): boolean {
+    let node: { parent?: WorkspaceParent } | null = leaf;
+    while (node) {
+      if ((node as unknown as WorkspaceParent) === group) return true;
+      node = node.parent ?? null;
+    }
+    return false;
+  }
+
+  /** Show the active project's pane, hide all others. */
+  private applyGroupVisibility(activeId: string): void {
+    for (const [projectId, group] of [...this.projectGroups]) {
+      const el = this.groupContainer(group);
+      if (!el || !el.isConnected) {
+        this.projectGroups.delete(projectId);
+        continue;
+      }
+      if (projectId === activeId) {
+        el.style.display = "";
+        el.style.flexGrow = "1";
+        el.style.flexBasis = "100%";
+        el.style.width = "100%";
+      } else {
+        el.style.display = "none";
+      }
+    }
+  }
+
+  /** Focus the most recently active leaf inside a group so its tab is shown
+   *  (preserves which tab was active within that pane). */
+  private focusGroup(group: WorkspaceParent): void {
+    const leaf = this.app.workspace.getMostRecentLeaf(group);
+    if (leaf) this.app.workspace.setActiveLeaf(leaf, { focus: true });
+  }
+
+  /** Focus the active project's pane (used before opening a note into it). */
+  focusActiveGroup(): void {
+    const group = this.getActiveGroup();
+    if (group) this.focusGroup(group);
   }
 
   saveActiveProjectTabs(force = false): number {
     if (this.isActivating && !force) return -1;
     const project = this.getActiveProject();
     if (!project) return -1;
-    // The most recent main-area leaf is the active tab, even when focus has
-    // moved to the sidebar (e.g. the user just clicked the project list).
+    const group = this.getLiveGroup(project.id);
+    if (!group) return -1; // No live pane yet (e.g. startup): nothing to save.
+
     const activeLeaf = this.app.workspace.getMostRecentLeaf(
       this.app.workspace.rootSplit
     );
@@ -385,6 +495,8 @@ export default class RecentViewPlugin extends Plugin {
 
     const open: OpenNote[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
+      // Only capture tabs that belong to this project's pane.
+      if (!this.leafInGroup(leaf, group)) return;
       // Read the file path from the view state rather than leaf.view.file:
       // background tabs are deferred in Obsidian 1.7+, so their view has no
       // .file until activated, but getViewState().state.file is always set.
@@ -403,6 +515,17 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   async deleteProject(project: Project): Promise<void> {
+    // Close the project's pane if it is live.
+    const group = this.projectGroups.get(project.id);
+    if (group) {
+      const toClose: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group)) toClose.push(leaf);
+      });
+      for (const leaf of toClose) leaf.detach();
+      this.projectGroups.delete(project.id);
+    }
+
     this.data.projects = this.data.projects.filter((p) => p.id !== project.id);
     if (this.data.activeProjectId === project.id) {
       this.data.activeProjectId = null;
@@ -613,23 +736,30 @@ class ProjectContentView extends ItemView {
 
   private openOrFocus(file: TFile): void {
     const { workspace } = this.plugin.app;
-    // If the file is already open in a tab, focus that tab instead of opening
-    // a duplicate.
-    const existing = this.findLeafForFile(file);
+    const group = this.plugin.getActiveGroup();
+    // If the file is already open in the active project's pane, focus that tab
+    // instead of opening a duplicate.
+    const existing = this.findLeafForFile(file, group);
     if (existing) {
       workspace.setActiveLeaf(existing, { focus: true });
       workspace.revealLeaf(existing);
       return;
     }
+    // Open in the active project's pane: focus a leaf in it first so the new
+    // tab is appended there rather than in another project's (hidden) pane.
+    if (group) this.plugin.focusActiveGroup();
     void workspace.getLeaf("tab").openFile(file);
   }
 
-  private findLeafForFile(file: TFile): WorkspaceLeaf | null {
+  private findLeafForFile(
+    file: TFile,
+    group: WorkspaceParent | null
+  ): WorkspaceLeaf | null {
     let found: WorkspaceLeaf | null = null;
     this.plugin.app.workspace.iterateRootLeaves((leaf) => {
-      if (!found && leaf.getViewState().state?.file === file.path) {
-        found = leaf;
-      }
+      if (found) return;
+      if (group && !this.plugin.leafInGroup(leaf, group)) return;
+      if (leaf.getViewState().state?.file === file.path) found = leaf;
     });
     return found;
   }
