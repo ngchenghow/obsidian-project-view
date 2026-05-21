@@ -707,6 +707,21 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /** A project's folders and all of their subfolders. */
+  projectFolders(project: Project): TFolder[] {
+    const found = new Map<string, TFolder>();
+    for (const fp of project.folders) {
+      const folder = this.app.vault.getAbstractFileByPath(fp);
+      if (folder instanceof TFolder) {
+        found.set(folder.path, folder);
+        Vault.recurseChildren(folder, (f) => {
+          if (f instanceof TFolder) found.set(f.path, f);
+        });
+      }
+    }
+    return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
+  }
+
   /** All markdown files belonging to a project (folder contents + loose notes). */
   projectFiles(project: Project): TFile[] {
     const found = new Map<string, TFile>();
@@ -1360,20 +1375,20 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
-      // List the project's own folders to open into this pane.
-      const folders = project.folders
-        .map((p) => this.plugin.app.vault.getAbstractFileByPath(p))
-        .filter((f): f is TFolder => f instanceof TFolder);
-      for (const folder of folders) {
-        menu.addItem((i) =>
-          i
-            .setTitle(`Open folder: ${folder.name}`)
-            .setIcon("folder")
-            .onClick(() =>
-              void this.plugin.openFolderInPane(project, paneId, folder)
-            )
-        );
-      }
+      // Open a folder (project folders + subfolders) into this pane.
+      menu.addItem((i) =>
+        i
+          .setTitle("Open folder…")
+          .setIcon("folder-open")
+          .onClick(() =>
+            new FolderSuggestModal(
+              this.plugin.app,
+              (folder) =>
+                void this.plugin.openFolderInPane(project, paneId, folder),
+              this.plugin.projectFolders(project)
+            ).open()
+          )
+      );
       menu.addItem((i) =>
         i
           .setTitle("Open note…")
@@ -1885,14 +1900,21 @@ class ProjectEditModal extends Modal {
 
 class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
   private onChoose: (folder: TFolder) => void;
+  private items?: TFolder[];
 
-  constructor(app: App, onChoose: (folder: TFolder) => void) {
+  constructor(
+    app: App,
+    onChoose: (folder: TFolder) => void,
+    items?: TFolder[]
+  ) {
     super(app);
     this.onChoose = onChoose;
+    this.items = items;
     this.setPlaceholder("Pick a folder");
   }
 
   getItems(): TFolder[] {
+    if (this.items) return this.items;
     const folders: TFolder[] = [];
     Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
       if (f instanceof TFolder) folders.push(f);

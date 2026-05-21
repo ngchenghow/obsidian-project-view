@@ -914,6 +914,21 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       await this.app.workspace.getLeaf("tab").openFile(file);
     }
   }
+  /** A project's folders and all of their subfolders. */
+  projectFolders(project) {
+    const found = /* @__PURE__ */ new Map();
+    for (const fp of project.folders) {
+      const folder = this.app.vault.getAbstractFileByPath(fp);
+      if (folder instanceof import_obsidian2.TFolder) {
+        found.set(folder.path, folder);
+        import_obsidian2.Vault.recurseChildren(folder, (f) => {
+          if (f instanceof import_obsidian2.TFolder)
+            found.set(f.path, f);
+        });
+      }
+    }
+    return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
+  }
   /** All markdown files belonging to a project (folder contents + loose notes). */
   projectFiles(project) {
     const found = /* @__PURE__ */ new Map();
@@ -1479,14 +1494,15 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
-      const folders = project.folders.map((p) => this.plugin.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian2.TFolder);
-      for (const folder of folders) {
-        menu.addItem(
-          (i) => i.setTitle(`Open folder: ${folder.name}`).setIcon("folder").onClick(
-            () => void this.plugin.openFolderInPane(project, paneId, folder)
-          )
-        );
-      }
+      menu.addItem(
+        (i) => i.setTitle("Open folder\u2026").setIcon("folder-open").onClick(
+          () => new FolderSuggestModal(
+            this.plugin.app,
+            (folder) => void this.plugin.openFolderInPane(project, paneId, folder),
+            this.plugin.projectFolders(project)
+          ).open()
+        )
+      );
       menu.addItem(
         (i) => i.setTitle("Open note\u2026").setIcon("file").onClick(
           () => new FileSuggestModal(
@@ -1907,12 +1923,15 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
   }
 };
 var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
-  constructor(app, onChoose) {
+  constructor(app, onChoose, items) {
     super(app);
     this.onChoose = onChoose;
+    this.items = items;
     this.setPlaceholder("Pick a folder");
   }
   getItems() {
+    if (this.items)
+      return this.items;
     const folders = [];
     import_obsidian2.Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
       if (f instanceof import_obsidian2.TFolder)
