@@ -1512,6 +1512,16 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
           ).open()
         )
       );
+      menu.addItem(
+        (i) => i.setTitle("Browse\u2026").setIcon("list-tree").onClick(
+          () => new ProjectTreeModal(
+            this.plugin.app,
+            project,
+            (folder) => void this.plugin.openFolderInPane(project, paneId, folder),
+            (file) => void this.plugin.openNoteInPane(project, paneId, file)
+          ).open()
+        )
+      );
       if (paneId) {
         menu.addSeparator();
         menu.addItem(
@@ -1962,6 +1972,81 @@ var FileSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   }
   onChooseItem(item) {
     this.onChoose(item);
+  }
+};
+var ProjectTreeModal = class extends import_obsidian2.Modal {
+  constructor(app, project, onFolder, onFile) {
+    super(app);
+    this.project = project;
+    this.onFolder = onFolder;
+    this.onFile = onFile;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Browse project" });
+    contentEl.createDiv({
+      cls: "rv-empty-sm",
+      text: "Choose a folder to open all of its notes, or choose a note to open just that note."
+    });
+    const tree = contentEl.createDiv({ cls: "rv-tree-picker" });
+    const folders = this.topLevelProjectFolders();
+    for (const folder of folders)
+      this.renderFolder(tree, folder, 0);
+    const looseNotes = this.looseProjectNotes();
+    if (looseNotes.length > 0) {
+      const section = tree.createDiv({ cls: "rv-tree-section" });
+      section.createSpan({ text: "Notes" });
+      for (const file of looseNotes)
+        this.renderFile(tree, file, 1);
+    }
+    if (folders.length === 0 && looseNotes.length === 0) {
+      tree.createDiv({ cls: "rv-empty", text: "No project folders or notes." });
+    }
+  }
+  topLevelProjectFolders() {
+    const folders = this.project.folders.map((path) => this.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian2.TFolder).sort((a, b) => a.path.localeCompare(b.path));
+    return folders.filter(
+      (folder, index) => folders.findIndex((other) => folder.path === other.path) === index && !folders.some(
+        (other) => other.path !== folder.path && folder.path.startsWith(other.path + "/")
+      )
+    );
+  }
+  looseProjectNotes() {
+    const insideProjectFolder = (file) => this.project.folders.some(
+      (folderPath) => file.path === folderPath || file.path.startsWith(folderPath + "/")
+    );
+    return this.project.notes.map((path) => this.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian2.TFile && !insideProjectFolder(f)).sort((a, b) => a.path.localeCompare(b.path));
+  }
+  renderFolder(container, folder, depth) {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "folder");
+    row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
+    row.setAttribute("aria-label", `Open all notes in ${folder.path}`);
+    row.onclick = () => {
+      this.onFolder(folder);
+      this.close();
+    };
+    const children = [...folder.children];
+    const files = children.filter((child) => child instanceof import_obsidian2.TFile && child.extension === "md").sort((a, b) => a.basename.localeCompare(b.basename));
+    const folders = children.filter((child) => child instanceof import_obsidian2.TFolder).sort((a, b) => a.name.localeCompare(b.name));
+    for (const file of files)
+      this.renderFile(container, file, depth + 1);
+    for (const child of folders)
+      this.renderFolder(container, child, depth + 1);
+  }
+  renderFile(container, file, depth) {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-file" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "file");
+    row.createSpan({ cls: "rv-file-name", text: file.basename });
+    row.setAttribute("aria-label", `Open ${file.path}`);
+    row.onclick = () => {
+      this.onFile(file);
+      this.close();
+    };
   }
 };
 var ConfirmModal = class extends import_obsidian2.Modal {

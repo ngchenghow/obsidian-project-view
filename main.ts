@@ -1401,6 +1401,20 @@ class ProjectContentView extends ItemView {
             ).open()
           )
       );
+      menu.addItem((i) =>
+        i
+          .setTitle("Browse…")
+          .setIcon("list-tree")
+          .onClick(() =>
+            new ProjectTreeModal(
+              this.plugin.app,
+              project,
+              (folder) =>
+                void this.plugin.openFolderInPane(project, paneId, folder),
+              (file) => void this.plugin.openNoteInPane(project, paneId, file)
+            ).open()
+          )
+      );
       // Rename/Delete only apply to named (non-main) panes.
       if (paneId) {
         menu.addSeparator();
@@ -1952,6 +1966,113 @@ class FileSuggestModal extends FuzzySuggestModal<TFile> {
 
   onChooseItem(item: TFile): void {
     this.onChoose(item);
+  }
+}
+
+class ProjectTreeModal extends Modal {
+  private project: Project;
+  private onFolder: (folder: TFolder) => void;
+  private onFile: (file: TFile) => void;
+
+  constructor(
+    app: App,
+    project: Project,
+    onFolder: (folder: TFolder) => void,
+    onFile: (file: TFile) => void
+  ) {
+    super(app);
+    this.project = project;
+    this.onFolder = onFolder;
+    this.onFile = onFile;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Browse project" });
+    contentEl.createDiv({
+      cls: "rv-empty-sm",
+      text: "Choose a folder to open all of its notes, or choose a note to open just that note.",
+    });
+
+    const tree = contentEl.createDiv({ cls: "rv-tree-picker" });
+    const folders = this.topLevelProjectFolders();
+    for (const folder of folders) this.renderFolder(tree, folder, 0);
+
+    const looseNotes = this.looseProjectNotes();
+    if (looseNotes.length > 0) {
+      const section = tree.createDiv({ cls: "rv-tree-section" });
+      section.createSpan({ text: "Notes" });
+      for (const file of looseNotes) this.renderFile(tree, file, 1);
+    }
+
+    if (folders.length === 0 && looseNotes.length === 0) {
+      tree.createDiv({ cls: "rv-empty", text: "No project folders or notes." });
+    }
+  }
+
+  private topLevelProjectFolders(): TFolder[] {
+    const folders = this.project.folders
+      .map((path) => this.app.vault.getAbstractFileByPath(path))
+      .filter((f): f is TFolder => f instanceof TFolder)
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    return folders.filter(
+      (folder, index) =>
+        folders.findIndex((other) => folder.path === other.path) === index &&
+        !folders.some(
+          (other) =>
+            other.path !== folder.path && folder.path.startsWith(other.path + "/")
+        )
+    );
+  }
+
+  private looseProjectNotes(): TFile[] {
+    const insideProjectFolder = (file: TFile): boolean =>
+      this.project.folders.some(
+        (folderPath) => file.path === folderPath || file.path.startsWith(folderPath + "/")
+      );
+
+    return this.project.notes
+      .map((path) => this.app.vault.getAbstractFileByPath(path))
+      .filter((f): f is TFile => f instanceof TFile && !insideProjectFolder(f))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private renderFolder(container: HTMLElement, folder: TFolder, depth: number): void {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    setIcon(row.createSpan({ cls: "rv-file-icon" }), "folder");
+    row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
+    row.setAttribute("aria-label", `Open all notes in ${folder.path}`);
+    row.onclick = () => {
+      this.onFolder(folder);
+      this.close();
+    };
+
+    const children = [...folder.children];
+    const files = children
+      .filter((child): child is TFile => child instanceof TFile && child.extension === "md")
+      .sort((a, b) => a.basename.localeCompare(b.basename));
+    const folders = children
+      .filter((child): child is TFolder => child instanceof TFolder)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const file of files) this.renderFile(container, file, depth + 1);
+    for (const child of folders) this.renderFolder(container, child, depth + 1);
+  }
+
+  private renderFile(container: HTMLElement, file: TFile, depth: number): void {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-file" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    setIcon(row.createSpan({ cls: "rv-file-icon" }), "file");
+    row.createSpan({ cls: "rv-file-name", text: file.basename });
+    row.setAttribute("aria-label", `Open ${file.path}`);
+    row.onclick = () => {
+      this.onFile(file);
+      this.close();
+    };
   }
 }
 
