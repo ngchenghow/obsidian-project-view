@@ -1624,6 +1624,13 @@ class ProjectEditModal extends Modal {
       cls: "setting-item-description",
       text: "Paste a Google Drive folder share link to download its files into a folder. Set up Google Drive in plugin settings first. Desktop only.",
     });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Note: download is additive/overwrite — it writes the Drive files into " +
+        "the local folder (updating existing ones), but it does not delete " +
+        "local files that were removed on Drive. Same one-way model as upload.",
+    });
 
     new Setting(contentEl)
       .setName("Share link")

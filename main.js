@@ -1700,6 +1700,10 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
       cls: "setting-item-description",
       text: "Paste a Google Drive folder share link to download its files into a folder. Set up Google Drive in plugin settings first. Desktop only."
     });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Note: download is additive/overwrite \u2014 it writes the Drive files into the local folder (updating existing ones), but it does not delete local files that were removed on Drive. Same one-way model as upload."
+    });
     new import_obsidian2.Setting(contentEl).setName("Share link").addText(
       (t) => t.setPlaceholder("https://drive.google.com/drive/folders/\u2026").setValue(this.driveLink).onChange((v) => this.driveLink = v)
     ).addButton(
