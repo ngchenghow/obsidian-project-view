@@ -378,8 +378,10 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       if (projectId === activeId) {
         el.style.display = "";
         el.style.flexGrow = "1";
-        el.style.flexBasis = "100%";
-        el.style.width = "100%";
+        el.style.flexShrink = "1";
+        el.style.flexBasis = "0";
+        el.style.minWidth = "0";
+        el.style.width = "";
       } else {
         el.style.display = "none";
       }

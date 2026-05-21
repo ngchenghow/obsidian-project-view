@@ -454,10 +454,15 @@ export default class RecentViewPlugin extends Plugin {
         continue;
       }
       if (projectId === activeId) {
+        // Fill the root split, but allow shrinking below the tab-header content
+        // width (min-width:auto would otherwise stop the main area from getting
+        // narrower as more tabs open, limiting how far the sidebar can grow).
         el.style.display = "";
         el.style.flexGrow = "1";
-        el.style.flexBasis = "100%";
-        el.style.width = "100%";
+        el.style.flexShrink = "1";
+        el.style.flexBasis = "0";
+        el.style.minWidth = "0";
+        el.style.width = "";
       } else {
         el.style.display = "none";
       }
