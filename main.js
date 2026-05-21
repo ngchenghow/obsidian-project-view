@@ -379,23 +379,27 @@ var ProjectListView = class extends import_obsidian.ItemView {
         info.createDiv({ cls: "rv-project-desc", text: project.description });
       }
       const actions = box.createDiv({ cls: "rv-project-actions" });
-      const editBtn = actions.createEl("button", { cls: "rv-icon-btn" });
-      (0, import_obsidian.setIcon)(editBtn, "pencil");
-      editBtn.setAttribute("aria-label", "Edit project");
-      editBtn.onclick = (e) => {
+      const menuBtn = actions.createEl("button", { cls: "rv-icon-btn" });
+      (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+      menuBtn.setAttribute("aria-label", "Project options");
+      menuBtn.onclick = (e) => {
         e.stopPropagation();
-        new ProjectEditModal(this.plugin.app, this.plugin, project).open();
-      };
-      const delBtn = actions.createEl("button", { cls: "rv-icon-btn" });
-      (0, import_obsidian.setIcon)(delBtn, "trash-2");
-      delBtn.setAttribute("aria-label", "Delete project");
-      delBtn.onclick = (e) => {
-        e.stopPropagation();
-        new ConfirmModal(
-          this.plugin.app,
-          `Delete project "${project.name}"?`,
-          () => void this.plugin.deleteProject(project)
-        ).open();
+        const menu = new import_obsidian.Menu();
+        menu.addItem(
+          (item) => item.setTitle("Edit project").setIcon("pencil").onClick(
+            () => new ProjectEditModal(this.plugin.app, this.plugin, project).open()
+          )
+        );
+        menu.addItem(
+          (item) => item.setTitle("Delete project").setIcon("trash-2").onClick(
+            () => new ConfirmModal(
+              this.plugin.app,
+              `Delete project "${project.name}"?`,
+              () => void this.plugin.deleteProject(project)
+            ).open()
+          )
+        );
+        menu.showAtMouseEvent(e);
       };
       box.onclick = () => void this.plugin.openProject(project);
     }
