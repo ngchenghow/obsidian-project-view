@@ -1183,6 +1183,9 @@ var ProjectListView = class extends import_obsidian2.ItemView {
         );
         if (project.driveFolderId) {
           menu.addItem(
+            (item) => item.setTitle("Download from Google Drive").setIcon("cloud-download").onClick(() => void this.plugin.downloadProjectFromDrive(project))
+          );
+          menu.addItem(
             (item) => item.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadProjectToDrive(project))
           );
         }
