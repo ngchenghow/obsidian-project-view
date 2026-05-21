@@ -664,6 +664,7 @@ class ProjectListView extends ItemView {
 
 class ProjectContentView extends ItemView {
   plugin: RecentViewPlugin;
+  private reordering = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: RecentViewPlugin) {
     super(leaf);
@@ -732,14 +733,32 @@ class ProjectContentView extends ItemView {
       .filter((f): f is TFile => f instanceof TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
+      if (this.reordering) section.addClass("rv-reordering");
       const head = section.createDiv({ cls: "rv-folder-head" });
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
+      const reorderBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-reorder-btn",
+      });
+      if (this.reordering) reorderBtn.addClass("is-active");
+      setIcon(reorderBtn, this.reordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.reordering ? "Done reordering" : "Reorder pinned"
+      );
+      reorderBtn.onclick = () => {
+        this.reordering = !this.reordering;
+        this.render();
+      };
+
       const fileList = section.createDiv({ cls: "rv-file-list" });
       for (const file of pinnedFiles) {
         const item = this.renderFileItem(fileList, file);
-        this.makePinDraggable(item, file, project);
+        if (this.reordering) this.makePinDraggable(item, file, project);
       }
+    } else if (this.reordering) {
+      // No pinned notes left to reorder.
+      this.reordering = false;
     }
 
     for (const folderPath of project.folders) {

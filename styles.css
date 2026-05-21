@@ -197,6 +197,22 @@
 }
 
 /* Pinned drag-to-reorder */
+.rv-reorder-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.rv-reorder-btn.is-active {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.rv-pinned-section.rv-reordering .rv-file-list {
+  border: 1px dashed var(--interactive-accent);
+  border-radius: var(--radius-s);
+  padding: 2px 0;
+}
+
 .rv-pin-draggable {
   cursor: grab;
 }

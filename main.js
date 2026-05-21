@@ -557,6 +557,7 @@ var ProjectListView = class extends import_obsidian.ItemView {
 var ProjectContentView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.reordering = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -607,14 +608,33 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
+      if (this.reordering)
+        section.addClass("rv-reordering");
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
+      const reorderBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-reorder-btn"
+      });
+      if (this.reordering)
+        reorderBtn.addClass("is-active");
+      (0, import_obsidian.setIcon)(reorderBtn, this.reordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.reordering ? "Done reordering" : "Reorder pinned"
+      );
+      reorderBtn.onclick = () => {
+        this.reordering = !this.reordering;
+        this.render();
+      };
       const fileList = section.createDiv({ cls: "rv-file-list" });
       for (const file of pinnedFiles) {
         const item = this.renderFileItem(fileList, file);
-        this.makePinDraggable(item, file, project);
+        if (this.reordering)
+          this.makePinDraggable(item, file, project);
       }
+    } else if (this.reordering) {
+      this.reordering = false;
     }
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
