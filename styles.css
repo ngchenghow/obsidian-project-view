@@ -185,7 +185,7 @@
   font-size: var(--font-ui-smaller);
 }
 
-.rv-subfolder-sep::before {
+.rv-subfolder-sep::after {
   content: "";
   flex: 1;
   height: 1px;
