@@ -221,6 +221,22 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
+  /** Reorder pinned notes: move fromPath next to toPath (after or before). */
+  async movePin(project, fromPath, toPath, after) {
+    var _a;
+    const pinned = (_a = project.pinned) != null ? _a : project.pinned = [];
+    const from = pinned.indexOf(fromPath);
+    if (from < 0)
+      return;
+    pinned.splice(from, 1);
+    const target = pinned.indexOf(toPath);
+    if (target < 0)
+      pinned.push(fromPath);
+    else
+      pinned.splice(after ? target + 1 : target, 0, fromPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
   async activateListView() {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)[0];
@@ -588,15 +604,17 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     if (project.description) {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
-    const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile).sort((a, b) => a.basename.localeCompare(b.basename));
+    const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      for (const file of pinnedFiles)
-        this.renderFileItem(fileList, file);
+      for (const file of pinnedFiles) {
+        const item = this.renderFileItem(fileList, file);
+        this.makePinDraggable(item, file, project);
+      }
     }
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
@@ -645,6 +663,44 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       if (project)
         void this.plugin.togglePin(project, file.path);
     };
+    return item;
+  }
+  /** Make a pinned item draggable so the pinned list can be reordered. */
+  makePinDraggable(item, file, project) {
+    item.draggable = true;
+    item.addClass("rv-pin-draggable");
+    item.addEventListener("dragstart", (e) => {
+      var _a;
+      (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", file.path);
+      if (e.dataTransfer)
+        e.dataTransfer.effectAllowed = "move";
+      item.addClass("rv-dragging");
+    });
+    item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
+    item.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (e.dataTransfer)
+        e.dataTransfer.dropEffect = "move";
+      const rect = item.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      item.toggleClass("rv-drop-after", after);
+      item.toggleClass("rv-drop-before", !after);
+    });
+    item.addEventListener("dragleave", () => {
+      item.removeClass("rv-drop-before");
+      item.removeClass("rv-drop-after");
+    });
+    item.addEventListener("drop", (e) => {
+      var _a;
+      e.preventDefault();
+      const after = item.hasClass("rv-drop-after");
+      item.removeClass("rv-drop-before");
+      item.removeClass("rv-drop-after");
+      const fromPath = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
+      if (fromPath && fromPath !== file.path) {
+        void this.plugin.movePin(project, fromPath, file.path, after);
+      }
+    });
   }
   openOrFocus(file) {
     const { workspace } = this.plugin.app;

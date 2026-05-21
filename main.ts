@@ -273,6 +273,24 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshContentView();
   }
 
+  /** Reorder pinned notes: move fromPath next to toPath (after or before). */
+  async movePin(
+    project: Project,
+    fromPath: string,
+    toPath: string,
+    after: boolean
+  ): Promise<void> {
+    const pinned = project.pinned ?? (project.pinned = []);
+    const from = pinned.indexOf(fromPath);
+    if (from < 0) return;
+    pinned.splice(from, 1);
+    const target = pinned.indexOf(toPath);
+    if (target < 0) pinned.push(fromPath);
+    else pinned.splice(after ? target + 1 : target, 0, fromPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
+
   async activateListView(): Promise<void> {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)[0];
@@ -707,18 +725,21 @@ class ProjectContentView extends ItemView {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
 
-    // Pinned notes, shown above all folders.
+    // Pinned notes, shown above all folders in their saved (drag-reorderable)
+    // order.
     const pinnedFiles = (project.pinned ?? [])
       .map((path) => this.plugin.app.vault.getAbstractFileByPath(path))
-      .filter((f): f is TFile => f instanceof TFile)
-      .sort((a, b) => a.basename.localeCompare(b.basename));
+      .filter((f): f is TFile => f instanceof TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
       const head = section.createDiv({ cls: "rv-folder-head" });
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      for (const file of pinnedFiles) this.renderFileItem(fileList, file);
+      for (const file of pinnedFiles) {
+        const item = this.renderFileItem(fileList, file);
+        this.makePinDraggable(item, file, project);
+      }
     }
 
     for (const folderPath of project.folders) {
@@ -754,7 +775,7 @@ class ProjectContentView extends ItemView {
     }
   }
 
-  private renderFileItem(container: HTMLElement, file: TFile): void {
+  private renderFileItem(container: HTMLElement, file: TFile): HTMLElement {
     const item = container.createDiv({ cls: "rv-file-item" });
     setIcon(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
@@ -770,6 +791,45 @@ class ProjectContentView extends ItemView {
       e.stopPropagation();
       if (project) void this.plugin.togglePin(project, file.path);
     };
+    return item;
+  }
+
+  /** Make a pinned item draggable so the pinned list can be reordered. */
+  private makePinDraggable(
+    item: HTMLElement,
+    file: TFile,
+    project: Project
+  ): void {
+    item.draggable = true;
+    item.addClass("rv-pin-draggable");
+    item.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData("text/plain", file.path);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      item.addClass("rv-dragging");
+    });
+    item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
+    item.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const rect = item.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      item.toggleClass("rv-drop-after", after);
+      item.toggleClass("rv-drop-before", !after);
+    });
+    item.addEventListener("dragleave", () => {
+      item.removeClass("rv-drop-before");
+      item.removeClass("rv-drop-after");
+    });
+    item.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const after = item.hasClass("rv-drop-after");
+      item.removeClass("rv-drop-before");
+      item.removeClass("rv-drop-after");
+      const fromPath = e.dataTransfer?.getData("text/plain");
+      if (fromPath && fromPath !== file.path) {
+        void this.plugin.movePin(project, fromPath, file.path, after);
+      }
+    });
   }
 
   private openOrFocus(file: TFile): void {

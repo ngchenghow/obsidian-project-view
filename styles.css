@@ -196,6 +196,23 @@
   color: var(--text-accent);
 }
 
+/* Pinned drag-to-reorder */
+.rv-pin-draggable {
+  cursor: grab;
+}
+
+.rv-file-item.rv-dragging {
+  opacity: 0.4;
+}
+
+.rv-file-item.rv-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--interactive-accent);
+}
+
+.rv-file-item.rv-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--interactive-accent);
+}
+
 /* Modal */
 
 .recent-view-modal .rv-modal-list {
