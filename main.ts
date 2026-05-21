@@ -1,5 +1,6 @@
 import {
   ItemView,
+  Menu,
   Modal,
   Notice,
   Plugin,
@@ -137,7 +138,17 @@ export default class RecentViewPlugin extends Plugin {
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
     );
 
-    this.app.workspace.onLayoutReady(() => this.activateListView());
+    this.app.workspace.onLayoutReady(() => {
+      this.activateListView();
+
+      // Keep the content pane in sync when notes are added/removed/renamed in
+      // the vault (e.g. a new note created inside a project folder). Registered
+      // after layout is ready so the initial "create" burst is not handled.
+      const onVaultChange = () => this.refreshContentView();
+      this.registerEvent(this.app.vault.on("create", onVaultChange));
+      this.registerEvent(this.app.vault.on("delete", onVaultChange));
+      this.registerEvent(this.app.vault.on("rename", onVaultChange));
+    });
   }
 
   onunload(): void {
@@ -517,7 +528,28 @@ class ProjectContentView extends ItemView {
     c.empty();
     c.addClass("recent-view-content");
 
+    const header = c.createDiv({ cls: "rv-content-header" });
     const project = this.plugin.getActiveProject();
+    header.createEl("h4", {
+      cls: "rv-content-title",
+      text: project ? project.name : "Project contents",
+    });
+    const menuBtn = header.createEl("button", {
+      cls: "rv-icon-btn rv-content-menu",
+    });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "More options");
+    menuBtn.onclick = (e) => {
+      const menu = new Menu();
+      menu.addItem((item) =>
+        item
+          .setTitle("Refresh")
+          .setIcon("refresh-cw")
+          .onClick(() => this.render())
+      );
+      menu.showAtMouseEvent(e);
+    };
+
     if (!project) {
       c.createDiv({
         cls: "rv-empty",
@@ -526,7 +558,6 @@ class ProjectContentView extends ItemView {
       return;
     }
 
-    c.createEl("h4", { cls: "rv-content-title", text: project.name });
     if (project.description) {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
@@ -556,10 +587,11 @@ class ProjectContentView extends ItemView {
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
       head.createSpan({ text: "Notes" });
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      for (const path of project.notes) {
-        const file = this.plugin.app.vault.getAbstractFileByPath(path);
-        if (file instanceof TFile) this.renderFileItem(fileList, file);
-      }
+      const looseNotes = project.notes
+        .map((path) => this.plugin.app.vault.getAbstractFileByPath(path))
+        .filter((f): f is TFile => f instanceof TFile)
+        .sort((a, b) => a.basename.localeCompare(b.basename));
+      for (const file of looseNotes) this.renderFileItem(fileList, file);
     }
   }
 
@@ -582,7 +614,7 @@ function collectMarkdown(folder: TFolder): TFile[] {
     }
   };
   walk(folder);
-  return out;
+  return out.sort((a, b) => a.basename.localeCompare(b.basename));
 }
 
 class ProjectEditModal extends Modal {

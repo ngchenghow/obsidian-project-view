@@ -108,7 +108,13 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.saveActiveProjectTabs())
     );
-    this.app.workspace.onLayoutReady(() => this.activateListView());
+    this.app.workspace.onLayoutReady(() => {
+      this.activateListView();
+      const onVaultChange = () => this.refreshContentView();
+      this.registerEvent(this.app.vault.on("create", onVaultChange));
+      this.registerEvent(this.app.vault.on("delete", onVaultChange));
+      this.registerEvent(this.app.vault.on("rename", onVaultChange));
+    });
   }
   onunload() {
     if (this.noteWriteTimer !== null) {
@@ -417,7 +423,24 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const c = this.contentEl;
     c.empty();
     c.addClass("recent-view-content");
+    const header = c.createDiv({ cls: "rv-content-header" });
     const project = this.plugin.getActiveProject();
+    header.createEl("h4", {
+      cls: "rv-content-title",
+      text: project ? project.name : "Project contents"
+    });
+    const menuBtn = header.createEl("button", {
+      cls: "rv-icon-btn rv-content-menu"
+    });
+    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "More options");
+    menuBtn.onclick = (e) => {
+      const menu = new import_obsidian.Menu();
+      menu.addItem(
+        (item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => this.render())
+      );
+      menu.showAtMouseEvent(e);
+    };
     if (!project) {
       c.createDiv({
         cls: "rv-empty",
@@ -425,7 +448,6 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       });
       return;
     }
-    c.createEl("h4", { cls: "rv-content-title", text: project.name });
     if (project.description) {
       c.createDiv({ cls: "rv-project-desc", text: project.description });
     }
@@ -453,11 +475,9 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
       head.createSpan({ text: "Notes" });
       const fileList = section.createDiv({ cls: "rv-file-list" });
-      for (const path of project.notes) {
-        const file = this.plugin.app.vault.getAbstractFileByPath(path);
-        if (file instanceof import_obsidian.TFile)
-          this.renderFileItem(fileList, file);
-      }
+      const looseNotes = project.notes.map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile).sort((a, b) => a.basename.localeCompare(b.basename));
+      for (const file of looseNotes)
+        this.renderFileItem(fileList, file);
     }
   }
   renderFileItem(container, file) {
@@ -480,7 +500,7 @@ function collectMarkdown(folder) {
     }
   };
   walk(folder);
-  return out;
+  return out.sort((a, b) => a.basename.localeCompare(b.basename));
 }
 var ProjectEditModal = class extends import_obsidian.Modal {
   constructor(app, plugin, project) {
