@@ -1458,14 +1458,14 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
-      menu.addItem(
-        (i) => i.setTitle("Open folder's notes\u2026").setIcon("folder-open").onClick(
-          () => new FolderSuggestModal(
-            this.plugin.app,
-            (folder) => void this.plugin.openFolderInPane(project, paneId, folder)
-          ).open()
-        )
-      );
+      const folders = project.folders.map((p) => this.plugin.app.vault.getAbstractFileByPath(p)).filter((f) => f instanceof import_obsidian2.TFolder);
+      for (const folder of folders) {
+        menu.addItem(
+          (i) => i.setTitle(`Open folder: ${folder.name}`).setIcon("folder").onClick(
+            () => void this.plugin.openFolderInPane(project, paneId, folder)
+          )
+        );
+      }
       menu.addItem(
         (i) => i.setTitle("Open note\u2026").setIcon("file").onClick(
           () => new FileSuggestModal(
@@ -1475,6 +1475,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
         )
       );
       if (paneId) {
+        menu.addSeparator();
         menu.addItem(
           (i) => i.setTitle("Rename").setIcon("pencil").onClick(
             () => new PromptModal(

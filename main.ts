@@ -1340,18 +1340,20 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
-      menu.addItem((i) =>
-        i
-          .setTitle("Open folder's notes…")
-          .setIcon("folder-open")
-          .onClick(() =>
-            new FolderSuggestModal(
-              this.plugin.app,
-              (folder) =>
-                void this.plugin.openFolderInPane(project, paneId, folder)
-            ).open()
-          )
-      );
+      // List the project's own folders to open into this pane.
+      const folders = project.folders
+        .map((p) => this.plugin.app.vault.getAbstractFileByPath(p))
+        .filter((f): f is TFolder => f instanceof TFolder);
+      for (const folder of folders) {
+        menu.addItem((i) =>
+          i
+            .setTitle(`Open folder: ${folder.name}`)
+            .setIcon("folder")
+            .onClick(() =>
+              void this.plugin.openFolderInPane(project, paneId, folder)
+            )
+        );
+      }
       menu.addItem((i) =>
         i
           .setTitle("Open note…")
@@ -1365,6 +1367,7 @@ class ProjectContentView extends ItemView {
       );
       // Rename/Delete only apply to named (non-main) panes.
       if (paneId) {
+        menu.addSeparator();
         menu.addItem((i) =>
           i
             .setTitle("Rename")
