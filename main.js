@@ -1582,9 +1582,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       const menu = new import_obsidian2.Menu();
       const lastClosed = this.plugin.lastClosedNote(project, paneId);
       menu.addItem(
-        (i) => i.setTitle(
-          lastClosed ? `Open last closed tab: ${lastClosed.path}` : "Open last closed tab"
-        ).setIcon("undo-2").setDisabled(!lastClosed).onClick(
+        (i) => i.setTitle("Open last closed tab").setIcon("undo-2").setDisabled(!lastClosed).onClick(
           () => void this.plugin.openLastClosedInPane(project, paneId)
         )
       );

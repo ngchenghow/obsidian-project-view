@@ -1485,11 +1485,7 @@ class ProjectContentView extends ItemView {
       const lastClosed = this.plugin.lastClosedNote(project, paneId);
       menu.addItem((i) =>
         i
-          .setTitle(
-            lastClosed
-              ? `Open last closed tab: ${lastClosed.path}`
-              : "Open last closed tab"
-          )
+          .setTitle("Open last closed tab")
           .setIcon("undo-2")
           .setDisabled(!lastClosed)
           .onClick(() =>
