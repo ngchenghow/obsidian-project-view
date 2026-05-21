@@ -696,12 +696,10 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       }
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof import_obsidian.TFolder) {
-        const files = collectMarkdown(folder);
-        if (files.length === 0) {
+        const count = this.renderFolderTree(fileList, folder);
+        if (count === 0) {
           fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
         }
-        for (const f of files)
-          this.renderFileItem(fileList, f);
       } else {
         fileList.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
       }
@@ -730,6 +728,29 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       this.showFileMenu(e, file);
     };
     return item;
+  }
+  /**
+   * Render a folder's notes (sorted), then each subfolder's notes below a
+   * separator labelled with the subfolder name (recursively). Returns the total
+   * number of notes rendered.
+   */
+  renderFolderTree(container, folder) {
+    const children = [...folder.children];
+    const files = children.filter((c) => c instanceof import_obsidian.TFile && c.extension === "md").sort((a, b) => a.basename.localeCompare(b.basename));
+    const subfolders = children.filter((c) => c instanceof import_obsidian.TFolder).sort((a, b) => a.name.localeCompare(b.name));
+    let count = 0;
+    for (const f of files) {
+      this.renderFileItem(container, f);
+      count++;
+    }
+    for (const sub of subfolders) {
+      if (countMarkdown(sub) === 0)
+        continue;
+      const sep = container.createDiv({ cls: "rv-subfolder-sep" });
+      sep.createSpan({ cls: "rv-subfolder-label", text: sub.name });
+      count += this.renderFolderTree(container, sub);
+    }
+    return count;
   }
   showFileMenu(e, file) {
     var _a;
@@ -868,18 +889,15 @@ var RenameModal = class extends import_obsidian.Modal {
     this.close();
   }
 };
-function collectMarkdown(folder) {
-  const out = [];
-  const walk = (f) => {
-    for (const child of f.children) {
-      if (child instanceof import_obsidian.TFolder)
-        walk(child);
-      else if (child instanceof import_obsidian.TFile && child.extension === "md")
-        out.push(child);
-    }
-  };
-  walk(folder);
-  return out.sort((a, b) => a.basename.localeCompare(b.basename));
+function countMarkdown(folder) {
+  let n = 0;
+  for (const child of folder.children) {
+    if (child instanceof import_obsidian.TFolder)
+      n += countMarkdown(child);
+    else if (child instanceof import_obsidian.TFile && child.extension === "md")
+      n++;
+  }
+  return n;
 }
 var ProjectEditModal = class extends import_obsidian.Modal {
   constructor(app, plugin, project) {

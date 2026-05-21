@@ -150,6 +150,28 @@
   flex-direction: column;
 }
 
+/* Separator + right-aligned label before a subfolder's notes */
+.rv-subfolder-sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 6px 2px 24px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.rv-subfolder-sep::before {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--background-modifier-border);
+}
+
+.rv-subfolder-label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
 .rv-file-item {
   display: flex;
   align-items: center;

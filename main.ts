@@ -826,11 +826,10 @@ class ProjectContentView extends ItemView {
 
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof TFolder) {
-        const files = collectMarkdown(folder);
-        if (files.length === 0) {
+        const count = this.renderFolderTree(fileList, folder);
+        if (count === 0) {
           fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
         }
-        for (const f of files) this.renderFileItem(fileList, f);
       } else {
         fileList.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
       }
@@ -864,6 +863,34 @@ class ProjectContentView extends ItemView {
       this.showFileMenu(e, file);
     };
     return item;
+  }
+
+  /**
+   * Render a folder's notes (sorted), then each subfolder's notes below a
+   * separator labelled with the subfolder name (recursively). Returns the total
+   * number of notes rendered.
+   */
+  private renderFolderTree(container: HTMLElement, folder: TFolder): number {
+    const children = [...folder.children];
+    const files = children
+      .filter((c): c is TFile => c instanceof TFile && c.extension === "md")
+      .sort((a, b) => a.basename.localeCompare(b.basename));
+    const subfolders = children
+      .filter((c): c is TFolder => c instanceof TFolder)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    let count = 0;
+    for (const f of files) {
+      this.renderFileItem(container, f);
+      count++;
+    }
+    for (const sub of subfolders) {
+      if (countMarkdown(sub) === 0) continue;
+      const sep = container.createDiv({ cls: "rv-subfolder-sep" });
+      sep.createSpan({ cls: "rv-subfolder-label", text: sub.name });
+      count += this.renderFolderTree(container, sub);
+    }
+    return count;
   }
 
   private showFileMenu(e: MouseEvent, file: TFile): void {
@@ -1023,16 +1050,13 @@ class RenameModal extends Modal {
   }
 }
 
-function collectMarkdown(folder: TFolder): TFile[] {
-  const out: TFile[] = [];
-  const walk = (f: TFolder) => {
-    for (const child of f.children) {
-      if (child instanceof TFolder) walk(child);
-      else if (child instanceof TFile && child.extension === "md") out.push(child);
-    }
-  };
-  walk(folder);
-  return out.sort((a, b) => a.basename.localeCompare(b.basename));
+function countMarkdown(folder: TFolder): number {
+  let n = 0;
+  for (const child of folder.children) {
+    if (child instanceof TFolder) n += countMarkdown(child);
+    else if (child instanceof TFile && child.extension === "md") n++;
+  }
+  return n;
 }
 
 class ProjectEditModal extends Modal {
