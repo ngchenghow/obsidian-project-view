@@ -79,22 +79,23 @@
   flex-shrink: 0;
 }
 
-.rv-icon-btn {
+.rv-icon-btn,
+.rv-icon-btn:hover,
+.rv-icon-btn.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 4px;
-  background: transparent;
-  border: none;
-  box-shadow: none;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
   border-radius: var(--radius-s);
   cursor: pointer;
   color: var(--text-muted);
 }
 
-.rv-icon-btn:hover {
-  background: var(--background-modifier-hover);
-  box-shadow: none;
+.rv-icon-btn:hover,
+.rv-icon-btn.is-active {
   color: var(--text-normal);
 }
 
