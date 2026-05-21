@@ -191,17 +191,24 @@
   opacity: 1 !important;
 }
 
-/* Pinned drag-to-reorder */
-.rv-reorder-btn {
+/* 3-dot menu on section headers (Pinned / folders), shown on hover */
+.rv-head-menu {
   margin-left: auto;
   flex-shrink: 0;
+  padding: 2px;
+  opacity: 0;
 }
 
-.rv-reorder-btn.is-active {
-  color: var(--text-on-accent);
-  background: var(--interactive-accent);
+.rv-folder-head:hover .rv-head-menu {
+  opacity: 0.6;
 }
 
+.rv-head-menu:hover,
+.rv-head-menu.is-active {
+  opacity: 1 !important;
+}
+
+/* Pinned drag-to-reorder */
 .rv-pinned-section.rv-reordering .rv-file-list {
   border: 1px dashed var(--interactive-accent);
   border-radius: var(--radius-s);

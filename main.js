@@ -646,19 +646,23 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
-      const reorderBtn = head.createEl("button", {
-        cls: "rv-icon-btn rv-reorder-btn"
+      const menuBtn2 = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu"
       });
       if (this.reordering)
-        reorderBtn.addClass("is-active");
-      (0, import_obsidian.setIcon)(reorderBtn, this.reordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.reordering ? "Done reordering" : "Reorder pinned"
-      );
-      reorderBtn.onclick = () => {
-        this.reordering = !this.reordering;
-        this.render();
+        menuBtn2.addClass("is-active");
+      (0, import_obsidian.setIcon)(menuBtn2, "more-vertical");
+      menuBtn2.setAttribute("aria-label", "More options");
+      menuBtn2.onclick = (e) => {
+        e.stopPropagation();
+        const menu = new import_obsidian.Menu();
+        menu.addItem(
+          (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder").setIcon(this.reordering ? "check" : "arrow-up-down").onClick(() => {
+            this.reordering = !this.reordering;
+            this.render();
+          })
+        );
+        menu.showAtMouseEvent(e);
       };
       const fileList = section.createDiv({ cls: "rv-file-list" });
       for (const file of pinnedFiles) {
@@ -675,6 +679,21 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
       head.createSpan({ text: (_b = folder == null ? void 0 : folder.name) != null ? _b : folderPath });
+      if (folder instanceof import_obsidian.TFolder) {
+        const menuBtn2 = head.createEl("button", {
+          cls: "rv-icon-btn rv-head-menu"
+        });
+        (0, import_obsidian.setIcon)(menuBtn2, "more-vertical");
+        menuBtn2.setAttribute("aria-label", "More options");
+        menuBtn2.onclick = (e) => {
+          e.stopPropagation();
+          const menu = new import_obsidian.Menu();
+          menu.addItem(
+            (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
+          );
+          menu.showAtMouseEvent(e);
+        };
+      }
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof import_obsidian.TFolder) {
         const files = collectMarkdown(folder);
@@ -792,15 +811,18 @@ var ProjectContentView = class extends import_obsidian.ItemView {
   }
 };
 var RenameModal = class extends import_obsidian.Modal {
-  constructor(app, file) {
+  constructor(app, item) {
     super(app);
-    this.file = file;
-    this.value = file.basename;
+    this.item = item;
+    this.isFile = item instanceof import_obsidian.TFile;
+    this.value = item instanceof import_obsidian.TFile ? item.basename : item.name;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("recent-view-modal");
-    contentEl.createEl("h3", { text: "Rename note" });
+    contentEl.createEl("h3", {
+      text: this.isFile ? "Rename note" : "Rename folder"
+    });
     let inputEl = null;
     new import_obsidian.Setting(contentEl).setName("New name").addText((t) => {
       t.setValue(this.value).onChange((v) => this.value = v);
@@ -829,15 +851,16 @@ var RenameModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice("Name is required");
       return;
     }
-    const parent = (_a = this.file.parent) == null ? void 0 : _a.path;
+    const parent = (_a = this.item.parent) == null ? void 0 : _a.path;
     const dir = parent && parent !== "/" ? `${parent}/` : "";
-    const newPath = `${dir}${name}.${this.file.extension}`;
-    if (newPath === this.file.path) {
+    const ext = this.item instanceof import_obsidian.TFile ? `.${this.item.extension}` : "";
+    const newPath = `${dir}${name}${ext}`;
+    if (newPath === this.item.path) {
       this.close();
       return;
     }
     try {
-      await this.app.fileManager.renameFile(this.file, newPath);
+      await this.app.fileManager.renameFile(this.item, newPath);
     } catch (e) {
       new import_obsidian.Notice(`Rename failed: ${e.message}`);
       return;

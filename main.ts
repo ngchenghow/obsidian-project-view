@@ -6,6 +6,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TAbstractFile,
   TFile,
   TFolder,
   Vault,
@@ -766,18 +767,26 @@ class ProjectContentView extends ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "pin");
       head.createSpan({ text: "Pinned" });
-      const reorderBtn = head.createEl("button", {
-        cls: "rv-icon-btn rv-reorder-btn",
+      const menuBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu",
       });
-      if (this.reordering) reorderBtn.addClass("is-active");
-      setIcon(reorderBtn, this.reordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.reordering ? "Done reordering" : "Reorder pinned"
-      );
-      reorderBtn.onclick = () => {
-        this.reordering = !this.reordering;
-        this.render();
+      // Keep the menu visible while reordering so "Done" is easy to reach.
+      if (this.reordering) menuBtn.addClass("is-active");
+      setIcon(menuBtn, "more-vertical");
+      menuBtn.setAttribute("aria-label", "More options");
+      menuBtn.onclick = (e) => {
+        e.stopPropagation();
+        const menu = new Menu();
+        menu.addItem((i) =>
+          i
+            .setTitle(this.reordering ? "Done reordering" : "Reorder")
+            .setIcon(this.reordering ? "check" : "arrow-up-down")
+            .onClick(() => {
+              this.reordering = !this.reordering;
+              this.render();
+            })
+        );
+        menu.showAtMouseEvent(e);
       };
 
       const fileList = section.createDiv({ cls: "rv-file-list" });
@@ -796,6 +805,24 @@ class ProjectContentView extends ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
       head.createSpan({ text: folder?.name ?? folderPath });
+      if (folder instanceof TFolder) {
+        const menuBtn = head.createEl("button", {
+          cls: "rv-icon-btn rv-head-menu",
+        });
+        setIcon(menuBtn, "more-vertical");
+        menuBtn.setAttribute("aria-label", "More options");
+        menuBtn.onclick = (e) => {
+          e.stopPropagation();
+          const menu = new Menu();
+          menu.addItem((i) =>
+            i
+              .setTitle("Rename")
+              .setIcon("pencil")
+              .onClick(() => new RenameModal(this.plugin.app, folder).open())
+          );
+          menu.showAtMouseEvent(e);
+        };
+      }
 
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof TFolder) {
@@ -930,19 +957,23 @@ class ProjectContentView extends ItemView {
 }
 
 class RenameModal extends Modal {
-  private file: TFile;
+  private item: TAbstractFile;
   private value: string;
+  private isFile: boolean;
 
-  constructor(app: App, file: TFile) {
+  constructor(app: App, item: TAbstractFile) {
     super(app);
-    this.file = file;
-    this.value = file.basename;
+    this.item = item;
+    this.isFile = item instanceof TFile;
+    this.value = item instanceof TFile ? item.basename : item.name;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.addClass("recent-view-modal");
-    contentEl.createEl("h3", { text: "Rename note" });
+    contentEl.createEl("h3", {
+      text: this.isFile ? "Rename note" : "Rename folder",
+    });
 
     let inputEl: HTMLInputElement | null = null;
     new Setting(contentEl).setName("New name").addText((t) => {
@@ -974,15 +1005,16 @@ class RenameModal extends Modal {
       new Notice("Name is required");
       return;
     }
-    const parent = this.file.parent?.path;
+    const parent = this.item.parent?.path;
     const dir = parent && parent !== "/" ? `${parent}/` : "";
-    const newPath = `${dir}${name}.${this.file.extension}`;
-    if (newPath === this.file.path) {
+    const ext = this.item instanceof TFile ? `.${this.item.extension}` : "";
+    const newPath = `${dir}${name}${ext}`;
+    if (newPath === this.item.path) {
       this.close();
       return;
     }
     try {
-      await this.app.fileManager.renameFile(this.file, newPath);
+      await this.app.fileManager.renameFile(this.item, newPath);
     } catch (e) {
       new Notice(`Rename failed: ${(e as Error).message}`);
       return;
