@@ -623,10 +623,12 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
+      menuBtn.addClass("is-active");
       const menu = new import_obsidian.Menu();
       menu.addItem(
         (item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => this.render())
       );
+      menu.onHide(() => menuBtn.removeClass("is-active"));
       menu.showAtMouseEvent(e);
     };
     if (!project) {
@@ -656,6 +658,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       menuBtn2.setAttribute("aria-label", "More options");
       menuBtn2.onclick = (e) => {
         e.stopPropagation();
+        menuBtn2.addClass("is-active");
         const menu = new import_obsidian.Menu();
         menu.addItem(
           (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder").setIcon(this.reordering ? "check" : "arrow-up-down").onClick(() => {
@@ -663,6 +666,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
             this.render();
           })
         );
+        menu.onHide(() => menuBtn2.removeClass("is-active"));
         menu.showAtMouseEvent(e);
       };
       const fileList = section.createDiv({ cls: "rv-file-list" });
@@ -688,10 +692,12 @@ var ProjectContentView = class extends import_obsidian.ItemView {
         menuBtn2.setAttribute("aria-label", "More options");
         menuBtn2.onclick = (e) => {
           e.stopPropagation();
+          menuBtn2.addClass("is-active");
           const menu = new import_obsidian.Menu();
           menu.addItem(
             (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
+          menu.onHide(() => menuBtn2.removeClass("is-active"));
           menu.showAtMouseEvent(e);
         };
       }
@@ -726,7 +732,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
-      this.showFileMenu(e, file);
+      this.showFileMenu(e, file, menuBtn);
     };
     return item;
   }
@@ -753,8 +759,9 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     }
     return count;
   }
-  showFileMenu(e, file) {
+  showFileMenu(e, file, btn) {
     var _a;
+    btn.addClass("is-active");
     const project = this.plugin.getActiveProject();
     const menu = new import_obsidian.Menu();
     if (project) {
@@ -766,6 +773,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     menu.addItem(
       (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, file).open())
     );
+    menu.onHide(() => btn.removeClass("is-active"));
     menu.showAtMouseEvent(e);
   }
   /** Make a pinned item draggable so the pinned list can be reordered. */

@@ -735,6 +735,7 @@ class ProjectContentView extends ItemView {
     setIcon(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
+      menuBtn.addClass("is-active");
       const menu = new Menu();
       menu.addItem((item) =>
         item
@@ -742,6 +743,7 @@ class ProjectContentView extends ItemView {
           .setIcon("refresh-cw")
           .onClick(() => this.render())
       );
+      menu.onHide(() => menuBtn.removeClass("is-active"));
       menu.showAtMouseEvent(e);
     };
 
@@ -777,6 +779,7 @@ class ProjectContentView extends ItemView {
       menuBtn.setAttribute("aria-label", "More options");
       menuBtn.onclick = (e) => {
         e.stopPropagation();
+        menuBtn.addClass("is-active");
         const menu = new Menu();
         menu.addItem((i) =>
           i
@@ -787,6 +790,7 @@ class ProjectContentView extends ItemView {
               this.render();
             })
         );
+        menu.onHide(() => menuBtn.removeClass("is-active"));
         menu.showAtMouseEvent(e);
       };
 
@@ -814,6 +818,7 @@ class ProjectContentView extends ItemView {
         menuBtn.setAttribute("aria-label", "More options");
         menuBtn.onclick = (e) => {
           e.stopPropagation();
+          menuBtn.addClass("is-active");
           const menu = new Menu();
           menu.addItem((i) =>
             i
@@ -821,6 +826,7 @@ class ProjectContentView extends ItemView {
               .setIcon("pencil")
               .onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
+          menu.onHide(() => menuBtn.removeClass("is-active"));
           menu.showAtMouseEvent(e);
         };
       }
@@ -861,7 +867,7 @@ class ProjectContentView extends ItemView {
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
-      this.showFileMenu(e, file);
+      this.showFileMenu(e, file, menuBtn);
     };
     return item;
   }
@@ -894,7 +900,8 @@ class ProjectContentView extends ItemView {
     return count;
   }
 
-  private showFileMenu(e: MouseEvent, file: TFile): void {
+  private showFileMenu(e: MouseEvent, file: TFile, btn: HTMLElement): void {
+    btn.addClass("is-active");
     const project = this.plugin.getActiveProject();
     const menu = new Menu();
     if (project) {
@@ -912,6 +919,7 @@ class ProjectContentView extends ItemView {
         .setIcon("pencil")
         .onClick(() => new RenameModal(this.plugin.app, file).open())
     );
+    menu.onHide(() => btn.removeClass("is-active"));
     menu.showAtMouseEvent(e);
   }
 

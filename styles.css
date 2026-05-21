@@ -139,7 +139,8 @@
   opacity: 0.6;
 }
 
-.recent-view-content .rv-content-menu:hover {
+.recent-view-content .rv-content-menu:hover,
+.recent-view-content .rv-content-menu.is-active {
   opacity: 1 !important;
 }
 
@@ -224,7 +225,8 @@
   opacity: 0.6;
 }
 
-.rv-item-menu:hover {
+.rv-item-menu:hover,
+.rv-item-menu.is-active {
   opacity: 1 !important;
 }
 
