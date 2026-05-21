@@ -707,6 +707,26 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /** All markdown files belonging to a project (folder contents + loose notes). */
+  projectFiles(project: Project): TFile[] {
+    const found = new Map<string, TFile>();
+    for (const fp of project.folders) {
+      const folder = this.app.vault.getAbstractFileByPath(fp);
+      if (folder instanceof TFolder) {
+        Vault.recurseChildren(folder, (f) => {
+          if (f instanceof TFile && f.extension === "md") found.set(f.path, f);
+        });
+      }
+    }
+    for (const np of project.notes) {
+      const f = this.app.vault.getAbstractFileByPath(np);
+      if (f instanceof TFile) found.set(f.path, f);
+    }
+    return [...found.values()].sort((a, b) =>
+      a.basename.localeCompare(b.basename)
+    );
+  }
+
   /** The container element of a tab group, or null if it's gone. */
   private groupContainer(group: WorkspaceParent): HTMLElement | null {
     const el = (group as unknown as { containerEl?: HTMLElement }).containerEl;
@@ -1361,7 +1381,8 @@ class ProjectContentView extends ItemView {
           .onClick(() =>
             new FileSuggestModal(
               this.plugin.app,
-              (file) => void this.plugin.openNoteInPane(project, paneId, file)
+              (file) => void this.plugin.openNoteInPane(project, paneId, file),
+              this.plugin.projectFiles(project)
             ).open()
           )
       );
@@ -1890,15 +1911,17 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
 
 class FileSuggestModal extends FuzzySuggestModal<TFile> {
   private onChoose: (file: TFile) => void;
+  private items?: TFile[];
 
-  constructor(app: App, onChoose: (file: TFile) => void) {
+  constructor(app: App, onChoose: (file: TFile) => void, items?: TFile[]) {
     super(app);
     this.onChoose = onChoose;
+    this.items = items;
     this.setPlaceholder("Pick a note");
   }
 
   getItems(): TFile[] {
-    return this.app.vault.getMarkdownFiles();
+    return this.items ?? this.app.vault.getMarkdownFiles();
   }
 
   getItemText(item: TFile): string {

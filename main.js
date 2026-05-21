@@ -914,6 +914,27 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       await this.app.workspace.getLeaf("tab").openFile(file);
     }
   }
+  /** All markdown files belonging to a project (folder contents + loose notes). */
+  projectFiles(project) {
+    const found = /* @__PURE__ */ new Map();
+    for (const fp of project.folders) {
+      const folder = this.app.vault.getAbstractFileByPath(fp);
+      if (folder instanceof import_obsidian2.TFolder) {
+        import_obsidian2.Vault.recurseChildren(folder, (f) => {
+          if (f instanceof import_obsidian2.TFile && f.extension === "md")
+            found.set(f.path, f);
+        });
+      }
+    }
+    for (const np of project.notes) {
+      const f = this.app.vault.getAbstractFileByPath(np);
+      if (f instanceof import_obsidian2.TFile)
+        found.set(f.path, f);
+    }
+    return [...found.values()].sort(
+      (a, b) => a.basename.localeCompare(b.basename)
+    );
+  }
   /** The container element of a tab group, or null if it's gone. */
   groupContainer(group) {
     const el = group.containerEl;
@@ -1470,7 +1491,8 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
         (i) => i.setTitle("Open note\u2026").setIcon("file").onClick(
           () => new FileSuggestModal(
             this.plugin.app,
-            (file) => void this.plugin.openNoteInPane(project, paneId, file)
+            (file) => void this.plugin.openNoteInPane(project, paneId, file),
+            this.plugin.projectFiles(project)
           ).open()
         )
       );
@@ -1906,13 +1928,15 @@ var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   }
 };
 var FileSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
-  constructor(app, onChoose) {
+  constructor(app, onChoose, items) {
     super(app);
     this.onChoose = onChoose;
+    this.items = items;
     this.setPlaceholder("Pick a note");
   }
   getItems() {
-    return this.app.vault.getMarkdownFiles();
+    var _a;
+    return (_a = this.items) != null ? _a : this.app.vault.getMarkdownFiles();
   }
   getItemText(item) {
     return item.path;
