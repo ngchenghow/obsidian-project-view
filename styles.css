@@ -126,6 +126,15 @@
 
 .recent-view-content .rv-content-menu {
   flex-shrink: 0;
+  opacity: 0;
+}
+
+.recent-view-content .rv-content-header:hover .rv-content-menu {
+  opacity: 0.6;
+}
+
+.recent-view-content .rv-content-menu:hover {
+  opacity: 1 !important;
 }
 
 .rv-folder-section {
