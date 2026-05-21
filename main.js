@@ -1471,22 +1471,6 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
             ).open()
           )
         );
-        menu.addItem(
-          (item) => item.setTitle("Add folder to project\u2026").setIcon("folder-plus").onClick(
-            () => new FolderSuggestModal(
-              this.plugin.app,
-              (folder) => void this.plugin.addFolderToProject(project, folder)
-            ).open()
-          )
-        );
-        menu.addItem(
-          (item) => item.setTitle("Add note to project\u2026").setIcon("file-plus").onClick(
-            () => new FileSuggestModal(
-              this.plugin.app,
-              (file) => void this.plugin.addNoteToProject(project, file)
-            ).open()
-          )
-        );
       }
       if (project == null ? void 0 : project.driveFolderId) {
         menu.addItem(
