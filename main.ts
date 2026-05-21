@@ -38,6 +38,7 @@ interface ProjectPane {
   id: string;
   name: string;
   lastOpenNotes: OpenNote[];
+  lastClosedNotes?: OpenNote[];
 }
 
 interface Project {
@@ -48,6 +49,8 @@ interface Project {
   notes: string[];
   // Open tabs of the project's main (default) pane.
   lastOpenNotes: OpenNote[];
+  // Recently closed notes of the project's main pane.
+  lastClosedNotes?: OpenNote[];
   // Additional named panes; each keeps its own set of open tabs.
   panes: ProjectPane[];
   // Which pane is currently shown: null/undefined = the main pane.
@@ -279,11 +282,13 @@ export default class RecentViewPlugin extends Plugin {
       );
     for (const project of this.data.projects) {
       project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
+      project.lastClosedNotes = migrateNotes(project.lastClosedNotes);
       project.pinned = project.pinned ?? [];
       project.panes = (project.panes ?? []).map((p) => ({
         id: p.id,
         name: p.name,
         lastOpenNotes: migrateNotes(p.lastOpenNotes),
+        lastClosedNotes: migrateNotes(p.lastClosedNotes),
       }));
       if (project.activePaneId === undefined) project.activePaneId = null;
     }
@@ -384,8 +389,10 @@ export default class RecentViewPlugin extends Plugin {
       project.notes = project.notes.map((n) => track(n, remap(n)));
       project.pinned = (project.pinned ?? []).map((p) => track(p, remap(p)));
       project.lastOpenNotes = remapNotes(project.lastOpenNotes);
+      project.lastClosedNotes = remapNotes(project.lastClosedNotes ?? []);
       for (const pane of project.panes ?? []) {
         pane.lastOpenNotes = remapNotes(pane.lastOpenNotes);
+        pane.lastClosedNotes = remapNotes(pane.lastClosedNotes ?? []);
       }
     }
     if (changed) void this.persist();
@@ -501,6 +508,16 @@ export default class RecentViewPlugin extends Plugin {
     return project.panes.find((p) => p.id === paneId)?.lastOpenNotes ?? [];
   }
 
+  /** Recently closed notes for a pane, newest first. */
+  private paneClosedNotes(project: Project, paneId: string | null): OpenNote[] {
+    if (!paneId) return project.lastClosedNotes ?? [];
+    return project.panes.find((p) => p.id === paneId)?.lastClosedNotes ?? [];
+  }
+
+  lastClosedNote(project: Project, paneId: string | null): OpenNote | null {
+    return this.paneClosedNotes(project, paneId)[0] ?? null;
+  }
+
   private setPaneNotes(
     project: Project,
     paneId: string | null,
@@ -512,6 +529,38 @@ export default class RecentViewPlugin extends Plugin {
     }
     const pane = project.panes.find((p) => p.id === paneId);
     if (pane) pane.lastOpenNotes = notes;
+  }
+
+  private setPaneClosedNotes(
+    project: Project,
+    paneId: string | null,
+    notes: OpenNote[]
+  ): void {
+    if (!paneId) {
+      project.lastClosedNotes = notes;
+      return;
+    }
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane) pane.lastClosedNotes = notes;
+  }
+
+  private recordClosedNotes(
+    project: Project,
+    paneId: string | null,
+    closed: OpenNote[]
+  ): void {
+    if (closed.length === 0) return;
+    const existing = this.paneClosedNotes(project, paneId);
+    const next: OpenNote[] = [];
+    for (const note of [...closed].reverse()) {
+      if (!next.some((n) => n.path === note.path)) {
+        next.push({ ...note, active: true });
+      }
+    }
+    for (const note of existing) {
+      if (!next.some((n) => n.path === note.path)) next.push(note);
+    }
+    this.setPaneClosedNotes(project, paneId, next.slice(0, 20));
   }
 
   /**
@@ -623,6 +672,7 @@ export default class RecentViewPlugin extends Plugin {
       id: genId(),
       name: name.trim() || `Pane ${project.panes.length + 1}`,
       lastOpenNotes: [],
+      lastClosedNotes: [],
     };
     project.panes.push(pane);
     await this.persistNow();
@@ -685,6 +735,57 @@ export default class RecentViewPlugin extends Plugin {
   ): Promise<void> {
     await this.showPane(project, paneId);
     await this.openFilesInActivePane([file]);
+  }
+
+  /** Switch to a pane and reopen its most recently closed note. */
+  async openLastClosedInPane(
+    project: Project,
+    paneId: string | null
+  ): Promise<void> {
+    const closed = [...this.paneClosedNotes(project, paneId)];
+    while (closed.length > 0) {
+      const note = closed.shift();
+      if (!note) break;
+      const file = this.app.vault.getAbstractFileByPath(note.path);
+      if (!(file instanceof TFile)) continue;
+
+      this.setPaneClosedNotes(project, paneId, closed);
+      await this.showPane(project, paneId);
+      await this.openNoteStateInActivePane(note, file);
+      this.saveActiveProjectTabs(true);
+      await this.persistNow();
+      return;
+    }
+
+    this.setPaneClosedNotes(project, paneId, []);
+    await this.persistNow();
+    new Notice("No recently closed tab for this pane.");
+  }
+
+  private async openNoteStateInActivePane(
+    note: OpenNote,
+    file: TFile
+  ): Promise<void> {
+    const group = this.getActiveGroup();
+    if (!group) return;
+    this.focusActiveGroup();
+    let existing: WorkspaceLeaf | null = null;
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      if (
+        !existing &&
+        this.leafInGroup(leaf, group) &&
+        leaf.getViewState().state?.file === file.path
+      ) {
+        existing = leaf;
+      }
+    });
+    if (existing) {
+      this.app.workspace.setActiveLeaf(existing, { focus: true });
+      return;
+    }
+    await this.app.workspace
+      .getLeaf("tab")
+      .openFile(file, { eState: note.eState });
   }
 
   private async openFilesInActivePane(files: TFile[]): Promise<void> {
@@ -831,6 +932,7 @@ export default class RecentViewPlugin extends Plugin {
       this.saveActiveProjectTabs();
     } else {
       // All tabs closed: reopen the active pane as an empty new tab.
+      this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
       this.setPaneNotes(project, paneId, []);
       void this.showPane(project, paneId);
     }
@@ -871,6 +973,10 @@ export default class RecentViewPlugin extends Plugin {
         });
       }
     });
+    const removed = this.paneNotes(project, paneId).filter(
+      (note) => !open.some((o) => o.path === note.path)
+    );
+    this.recordClosedNotes(project, paneId, removed);
     this.setPaneNotes(project, paneId, open);
     void this.persist();
     return open.length;
@@ -931,6 +1037,7 @@ export default class RecentViewPlugin extends Plugin {
       folders: Array.from(new Set([...opts.folders, opts.target])),
       notes: opts.notes,
       lastOpenNotes: [],
+      lastClosedNotes: [],
       panes: [],
       activePaneId: null,
       pinned: [],
@@ -1375,6 +1482,20 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
+      const lastClosed = this.plugin.lastClosedNote(project, paneId);
+      menu.addItem((i) =>
+        i
+          .setTitle(
+            lastClosed
+              ? `Open last closed tab: ${lastClosed.path}`
+              : "Open last closed tab"
+          )
+          .setIcon("undo-2")
+          .setDisabled(!lastClosed)
+          .onClick(() =>
+            void this.plugin.openLastClosedInPane(project, paneId)
+          )
+      );
       // Open a folder (project folders + subfolders) into this pane.
       menu.addItem((i) =>
         i
@@ -1900,6 +2021,7 @@ class ProjectEditModal extends Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
+        lastClosedNotes: [],
         panes: [],
         activePaneId: null,
         pinned: [],

@@ -543,11 +543,13 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     );
     for (const project of this.data.projects) {
       project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
+      project.lastClosedNotes = migrateNotes(project.lastClosedNotes);
       project.pinned = (_f = project.pinned) != null ? _f : [];
       project.panes = ((_g = project.panes) != null ? _g : []).map((p) => ({
         id: p.id,
         name: p.name,
-        lastOpenNotes: migrateNotes(p.lastOpenNotes)
+        lastOpenNotes: migrateNotes(p.lastOpenNotes),
+        lastClosedNotes: migrateNotes(p.lastClosedNotes)
       }));
       if (project.activePaneId === void 0)
         project.activePaneId = null;
@@ -625,7 +627,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
   }
   /** Update stored paths across all projects when a file/folder is renamed. */
   handlePathRename(oldPath, newPath) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const remap = (p) => {
       if (p === oldPath)
         return newPath;
@@ -645,8 +647,10 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       project.notes = project.notes.map((n) => track(n, remap(n)));
       project.pinned = ((_a = project.pinned) != null ? _a : []).map((p) => track(p, remap(p)));
       project.lastOpenNotes = remapNotes(project.lastOpenNotes);
-      for (const pane of (_b = project.panes) != null ? _b : []) {
+      project.lastClosedNotes = remapNotes((_b = project.lastClosedNotes) != null ? _b : []);
+      for (const pane of (_c = project.panes) != null ? _c : []) {
         pane.lastOpenNotes = remapNotes(pane.lastOpenNotes);
+        pane.lastClosedNotes = remapNotes((_d = pane.lastClosedNotes) != null ? _d : []);
       }
     }
     if (changed)
@@ -755,6 +759,17 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       return project.lastOpenNotes;
     return (_b = (_a = project.panes.find((p) => p.id === paneId)) == null ? void 0 : _a.lastOpenNotes) != null ? _b : [];
   }
+  /** Recently closed notes for a pane, newest first. */
+  paneClosedNotes(project, paneId) {
+    var _a, _b, _c;
+    if (!paneId)
+      return (_a = project.lastClosedNotes) != null ? _a : [];
+    return (_c = (_b = project.panes.find((p) => p.id === paneId)) == null ? void 0 : _b.lastClosedNotes) != null ? _c : [];
+  }
+  lastClosedNote(project, paneId) {
+    var _a;
+    return (_a = this.paneClosedNotes(project, paneId)[0]) != null ? _a : null;
+  }
   setPaneNotes(project, paneId, notes) {
     if (!paneId) {
       project.lastOpenNotes = notes;
@@ -763,6 +778,31 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const pane = project.panes.find((p) => p.id === paneId);
     if (pane)
       pane.lastOpenNotes = notes;
+  }
+  setPaneClosedNotes(project, paneId, notes) {
+    if (!paneId) {
+      project.lastClosedNotes = notes;
+      return;
+    }
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane)
+      pane.lastClosedNotes = notes;
+  }
+  recordClosedNotes(project, paneId, closed) {
+    if (closed.length === 0)
+      return;
+    const existing = this.paneClosedNotes(project, paneId);
+    const next = [];
+    for (const note of [...closed].reverse()) {
+      if (!next.some((n) => n.path === note.path)) {
+        next.push({ ...note, active: true });
+      }
+    }
+    for (const note of existing) {
+      if (!next.some((n) => n.path === note.path))
+        next.push(note);
+    }
+    this.setPaneClosedNotes(project, paneId, next.slice(0, 20));
   }
   /**
    * Show a specific pane of a project: hide every other pane, restore (or
@@ -845,7 +885,8 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const pane = {
       id: genId(),
       name: name.trim() || `Pane ${project.panes.length + 1}`,
-      lastOpenNotes: []
+      lastOpenNotes: [],
+      lastClosedNotes: []
     };
     project.panes.push(pane);
     await this.persistNow();
@@ -895,6 +936,45 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
   async openNoteInPane(project, paneId, file) {
     await this.showPane(project, paneId);
     await this.openFilesInActivePane([file]);
+  }
+  /** Switch to a pane and reopen its most recently closed note. */
+  async openLastClosedInPane(project, paneId) {
+    const closed = [...this.paneClosedNotes(project, paneId)];
+    while (closed.length > 0) {
+      const note = closed.shift();
+      if (!note)
+        break;
+      const file = this.app.vault.getAbstractFileByPath(note.path);
+      if (!(file instanceof import_obsidian2.TFile))
+        continue;
+      this.setPaneClosedNotes(project, paneId, closed);
+      await this.showPane(project, paneId);
+      await this.openNoteStateInActivePane(note, file);
+      this.saveActiveProjectTabs(true);
+      await this.persistNow();
+      return;
+    }
+    this.setPaneClosedNotes(project, paneId, []);
+    await this.persistNow();
+    new import_obsidian2.Notice("No recently closed tab for this pane.");
+  }
+  async openNoteStateInActivePane(note, file) {
+    const group = this.getActiveGroup();
+    if (!group)
+      return;
+    this.focusActiveGroup();
+    let existing = null;
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      var _a;
+      if (!existing && this.leafInGroup(leaf, group) && ((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === file.path) {
+        existing = leaf;
+      }
+    });
+    if (existing) {
+      this.app.workspace.setActiveLeaf(existing, { focus: true });
+      return;
+    }
+    await this.app.workspace.getLeaf("tab").openFile(file, { eState: note.eState });
   }
   async openFilesInActivePane(files) {
     const group = this.getActiveGroup();
@@ -1039,6 +1119,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     if (this.getLiveGroup(key)) {
       this.saveActiveProjectTabs();
     } else {
+      this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
       this.setPaneNotes(project, paneId, []);
       void this.showPane(project, paneId);
     }
@@ -1078,6 +1159,10 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         });
       }
     });
+    const removed = this.paneNotes(project, paneId).filter(
+      (note) => !open.some((o) => o.path === note.path)
+    );
+    this.recordClosedNotes(project, paneId, removed);
     this.setPaneNotes(project, paneId, open);
     void this.persist();
     return open.length;
@@ -1129,6 +1214,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       folders: Array.from(/* @__PURE__ */ new Set([...opts.folders, opts.target])),
       notes: opts.notes,
       lastOpenNotes: [],
+      lastClosedNotes: [],
       panes: [],
       activePaneId: null,
       pinned: [],
@@ -1494,6 +1580,14 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
+      const lastClosed = this.plugin.lastClosedNote(project, paneId);
+      menu.addItem(
+        (i) => i.setTitle(
+          lastClosed ? `Open last closed tab: ${lastClosed.path}` : "Open last closed tab"
+        ).setIcon("undo-2").setDisabled(!lastClosed).onClick(
+          () => void this.plugin.openLastClosedInPane(project, paneId)
+        )
+      );
       menu.addItem(
         (i) => i.setTitle("Open folder\u2026").setIcon("folder-open").onClick(
           () => new FolderSuggestModal(
@@ -1921,6 +2015,7 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
+        lastClosedNotes: [],
         panes: [],
         activePaneId: null,
         pinned: []
