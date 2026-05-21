@@ -355,6 +355,16 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshContentView();
   }
 
+  /** Remove a folder from the project (does not delete it from the vault). */
+  async removeFolderFromProject(
+    project: Project,
+    folderPath: string
+  ): Promise<void> {
+    project.folders = project.folders.filter((f) => f !== folderPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
+
   /** Update stored paths across all projects when a file/folder is renamed. */
   private handlePathRename(oldPath: string, newPath: string): void {
     const remap = (p: string): string => {
@@ -1189,24 +1199,32 @@ class ProjectContentView extends ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
       head.createSpan({ text: folder?.name ?? folderPath });
-      if (folder instanceof TFolder) {
-        const menuBtn = head.createEl("button", {
-          cls: "rv-icon-btn rv-head-menu",
-        });
-        setIcon(menuBtn, "more-vertical");
-        menuBtn.setAttribute("aria-label", "More options");
-        menuBtn.onclick = (e) => {
-          e.stopPropagation();
-          const menu = new Menu();
+      const menuBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu",
+      });
+      setIcon(menuBtn, "more-vertical");
+      menuBtn.setAttribute("aria-label", "More options");
+      menuBtn.onclick = (e) => {
+        e.stopPropagation();
+        const menu = new Menu();
+        if (folder instanceof TFolder) {
           menu.addItem((i) =>
             i
               .setTitle("Rename")
               .setIcon("pencil")
               .onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
-          showMenu(menu, e, this.contentEl, menuBtn);
-        };
-      }
+        }
+        menu.addItem((i) =>
+          i
+            .setTitle("Remove from project")
+            .setIcon("x")
+            .onClick(() =>
+              void this.plugin.removeFolderFromProject(project, folderPath)
+            )
+        );
+        showMenu(menu, e, this.contentEl, menuBtn);
+      };
 
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof TFolder) {

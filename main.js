@@ -617,6 +617,12 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
+  /** Remove a folder from the project (does not delete it from the vault). */
+  async removeFolderFromProject(project, folderPath) {
+    project.folders = project.folders.filter((f) => f !== folderPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
   /** Update stored paths across all projects when a file/folder is renamed. */
   handlePathRename(oldPath, newPath) {
     var _a, _b;
@@ -1339,21 +1345,26 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       const head = section.createDiv({ cls: "rv-folder-head" });
       (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
       head.createSpan({ text: (_b = folder == null ? void 0 : folder.name) != null ? _b : folderPath });
-      if (folder instanceof import_obsidian2.TFolder) {
-        const menuBtn2 = head.createEl("button", {
-          cls: "rv-icon-btn rv-head-menu"
-        });
-        (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
-        menuBtn2.setAttribute("aria-label", "More options");
-        menuBtn2.onclick = (e) => {
-          e.stopPropagation();
-          const menu = new import_obsidian2.Menu();
+      const menuBtn2 = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu"
+      });
+      (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
+      menuBtn2.setAttribute("aria-label", "More options");
+      menuBtn2.onclick = (e) => {
+        e.stopPropagation();
+        const menu = new import_obsidian2.Menu();
+        if (folder instanceof import_obsidian2.TFolder) {
           menu.addItem(
             (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
           );
-          showMenu(menu, e, this.contentEl, menuBtn2);
-        };
-      }
+        }
+        menu.addItem(
+          (i) => i.setTitle("Remove from project").setIcon("x").onClick(
+            () => void this.plugin.removeFolderFromProject(project, folderPath)
+          )
+        );
+        showMenu(menu, e, this.contentEl, menuBtn2);
+      };
       const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof import_obsidian2.TFolder) {
         const count = this.renderFolderTree(fileList, folder);
