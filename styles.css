@@ -81,17 +81,24 @@
 
 .rv-icon-btn,
 .rv-icon-btn:hover,
+.rv-icon-btn:active,
+.rv-icon-btn:focus,
 .rv-icon-btn.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   padding: 4px;
+  margin: 0;
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
   border-radius: var(--radius-s);
   cursor: pointer;
   color: var(--text-muted);
+  /* Only transparency/colour should change on hover - never size/position. */
+  transform: none !important;
+  transition: opacity 0.1s ease, color 0.1s ease;
 }
 
 .rv-icon-btn:hover,
