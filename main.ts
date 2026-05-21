@@ -599,9 +599,30 @@ class ProjectContentView extends ItemView {
     const item = container.createDiv({ cls: "rv-file-item" });
     setIcon(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
-    item.onclick = () => {
-      void this.plugin.app.workspace.getLeaf("tab").openFile(file);
-    };
+    item.onclick = () => this.openOrFocus(file);
+  }
+
+  private openOrFocus(file: TFile): void {
+    const { workspace } = this.plugin.app;
+    // If the file is already open in a tab, focus that tab instead of opening
+    // a duplicate.
+    const existing = this.findLeafForFile(file);
+    if (existing) {
+      workspace.setActiveLeaf(existing, { focus: true });
+      workspace.revealLeaf(existing);
+      return;
+    }
+    void workspace.getLeaf("tab").openFile(file);
+  }
+
+  private findLeafForFile(file: TFile): WorkspaceLeaf | null {
+    let found: WorkspaceLeaf | null = null;
+    this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+      if (!found && leaf.getViewState().state?.file === file.path) {
+        found = leaf;
+      }
+    });
+    return found;
   }
 }
 

@@ -484,9 +484,27 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     const item = container.createDiv({ cls: "rv-file-item" });
     (0, import_obsidian.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
-    item.onclick = () => {
-      void this.plugin.app.workspace.getLeaf("tab").openFile(file);
-    };
+    item.onclick = () => this.openOrFocus(file);
+  }
+  openOrFocus(file) {
+    const { workspace } = this.plugin.app;
+    const existing = this.findLeafForFile(file);
+    if (existing) {
+      workspace.setActiveLeaf(existing, { focus: true });
+      workspace.revealLeaf(existing);
+      return;
+    }
+    void workspace.getLeaf("tab").openFile(file);
+  }
+  findLeafForFile(file) {
+    let found = null;
+    this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+      var _a;
+      if (!found && ((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === file.path) {
+        found = leaf;
+      }
+    });
+    return found;
   }
 };
 function collectMarkdown(folder) {
