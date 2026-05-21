@@ -412,7 +412,7 @@ export default class RecentViewPlugin extends Plugin {
       if (group) {
         this.projectGroups.set(project.id, group);
         this.applyGroupVisibility(project.id);
-        this.applyWallpaper(project, group);
+        this.refreshWallpaper();
         this.focusGroup(group);
       }
     } catch (e) {
@@ -568,30 +568,41 @@ export default class RecentViewPlugin extends Plugin {
     if (group) this.focusGroup(group);
   }
 
-  /** Apply (or clear) a project's wallpaper image on its pane container. */
-  private applyWallpaper(project: Project, group: WorkspaceParent): void {
+  private clearWallpaper(el: HTMLElement): void {
+    el.style.backgroundImage = "";
+    el.removeClass("rv-has-wallpaper");
+  }
+
+  /**
+   * Clear the wallpaper from every project pane, then set it only on the active
+   * project's pane. Clearing all first prevents a hidden/reused pane's image
+   * from bleeding onto another project.
+   */
+  refreshWallpaper(): void {
+    for (const [projectId, group] of [...this.projectGroups]) {
+      const el = this.groupContainer(group);
+      if (!el || !el.isConnected) {
+        this.projectGroups.delete(projectId);
+        continue;
+      }
+      this.clearWallpaper(el);
+    }
+
+    const project = this.getActiveProject();
+    const group = project && this.getLiveGroup(project.id);
+    if (!project || !group) return;
     const el = this.groupContainer(group);
-    if (!el) return;
-    const path = project.wallpaper;
-    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (file instanceof TFile) {
+    const file = project.wallpaper
+      ? this.app.vault.getAbstractFileByPath(project.wallpaper)
+      : null;
+    if (el && file instanceof TFile) {
       const url = this.app.vault.getResourcePath(file);
       el.style.backgroundImage = `url("${url}")`;
       el.style.backgroundSize = "cover";
       el.style.backgroundPosition = "center";
       el.style.backgroundRepeat = "no-repeat";
       el.addClass("rv-has-wallpaper");
-    } else {
-      el.style.backgroundImage = "";
-      el.removeClass("rv-has-wallpaper");
     }
-  }
-
-  /** Re-apply the active project's wallpaper (e.g. after editing it). */
-  refreshWallpaper(): void {
-    const project = this.getActiveProject();
-    const group = project && this.getLiveGroup(project.id);
-    if (project && group) this.applyWallpaper(project, group);
   }
 
   saveActiveProjectTabs(force = false): number {
