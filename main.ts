@@ -1229,6 +1229,26 @@ class ProjectListView extends ItemView {
               new ProjectEditModal(this.plugin.app, this.plugin, project).open()
             )
         );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add folder to project…")
+            .setIcon("folder-plus")
+            .onClick(() =>
+              new FolderSuggestModal(this.plugin.app, (folder) =>
+                void this.plugin.addFolderToProject(project, folder)
+              ).open()
+            )
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add note to project…")
+            .setIcon("file-plus")
+            .onClick(() =>
+              new FileSuggestModal(this.plugin.app, (file) =>
+                void this.plugin.addNoteToProject(project, file)
+              ).open()
+            )
+        );
         if (project.driveFolderId) {
           menu.addItem((item) =>
             item
