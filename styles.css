@@ -206,6 +206,15 @@
   cursor: pointer;
 }
 
+.rv-pane-item.is-active {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-accent);
+}
+
+.rv-pane-item.is-active .rv-file-icon {
+  color: var(--text-accent);
+}
+
 .rv-file-item:hover {
   background: var(--background-modifier-hover);
 }

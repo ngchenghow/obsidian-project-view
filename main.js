@@ -167,9 +167,19 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     } else {
       this.data = { projects: [], activeProjectId: null };
     }
+    const migrateNotes = (list) => (list != null ? list : []).map(
+      (n) => typeof n === "string" ? { path: n } : n
+    );
     for (const project of this.data.projects) {
-      project.lastOpenNotes = ((_c = project.lastOpenNotes) != null ? _c : []).map((n) => typeof n === "string" ? { path: n } : n);
-      project.pinned = (_d = project.pinned) != null ? _d : [];
+      project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
+      project.pinned = (_c = project.pinned) != null ? _c : [];
+      project.panes = ((_d = project.panes) != null ? _d : []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        lastOpenNotes: migrateNotes(p.lastOpenNotes)
+      }));
+      if (project.activePaneId === void 0)
+        project.activePaneId = null;
     }
   }
   async readDataNote() {
@@ -238,7 +248,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
   }
   /** Update stored paths across all projects when a file/folder is renamed. */
   handlePathRename(oldPath, newPath) {
-    var _a;
+    var _a, _b;
     const remap = (p) => {
       if (p === oldPath)
         return newPath;
@@ -252,14 +262,15 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
         changed = true;
       return after;
     };
+    const remapNotes = (list) => list.map((n) => ({ ...n, path: track(n.path, remap(n.path)) }));
     for (const project of this.data.projects) {
       project.folders = project.folders.map((f) => track(f, remap(f)));
       project.notes = project.notes.map((n) => track(n, remap(n)));
       project.pinned = ((_a = project.pinned) != null ? _a : []).map((p) => track(p, remap(p)));
-      project.lastOpenNotes = project.lastOpenNotes.map((n) => ({
-        ...n,
-        path: track(n.path, remap(n.path))
-      }));
+      project.lastOpenNotes = remapNotes(project.lastOpenNotes);
+      for (const pane of (_b = project.panes) != null ? _b : []) {
+        pane.lastOpenNotes = remapNotes(pane.lastOpenNotes);
+      }
     }
     if (changed)
       void this.persist();
@@ -330,32 +341,62 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
    * their tabs keep their full editor state.
    */
   async openProject(project) {
+    var _a;
+    await this.showPane(project, (_a = project.activePaneId) != null ? _a : null);
+  }
+  /** Unique key for a project's pane (main pane uses just the project id). */
+  paneKey(projectId, paneId) {
+    return paneId ? `${projectId}::${paneId}` : projectId;
+  }
+  /** The open-tabs list for a given pane (main pane stored on the project). */
+  paneNotes(project, paneId) {
+    var _a, _b;
+    if (!paneId)
+      return project.lastOpenNotes;
+    return (_b = (_a = project.panes.find((p) => p.id === paneId)) == null ? void 0 : _a.lastOpenNotes) != null ? _b : [];
+  }
+  setPaneNotes(project, paneId, notes) {
+    if (!paneId) {
+      project.lastOpenNotes = notes;
+      return;
+    }
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane)
+      pane.lastOpenNotes = notes;
+  }
+  /**
+   * Show a specific pane of a project: hide every other pane, restore (or
+   * create) this one's tab group.
+   */
+  async showPane(project, paneId) {
     this.saveActiveProjectTabs();
     this.isActivating = true;
     this.data.activeProjectId = project.id;
+    project.activePaneId = paneId;
     this.refreshListView();
     void this.activateContentView();
+    const key = this.paneKey(project.id, paneId);
     try {
-      let group = this.getLiveGroup(project.id);
+      let group = this.getLiveGroup(key);
       if (!group)
-        group = await this.createProjectGroup(project);
+        group = await this.createPaneGroup(project, paneId);
       if (group) {
-        this.projectGroups.set(project.id, group);
-        this.applyGroupVisibility(project.id);
+        this.projectGroups.set(key, group);
+        this.applyGroupVisibility(key);
         this.focusGroup(group);
       }
     } catch (e) {
-      console.error("[RecentView] failed to open project pane", e);
+      console.error("[RecentView] failed to open pane", e);
     }
     await this.persist();
     window.setTimeout(() => {
       this.isActivating = false;
     }, 150);
   }
-  /** Build a new tab group for a project from its saved notes. */
-  async createProjectGroup(project) {
+  /** Build a new tab group for a pane from its saved notes. */
+  async createPaneGroup(project, paneId) {
     var _a;
-    const notes = this.resolveNotes(project);
+    const notes = this.resolveNotes(this.paneNotes(project, paneId));
     const { workspace } = this.app;
     let firstLeaf;
     if (!this.hasAnyLiveGroup()) {
@@ -390,8 +431,8 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
     });
     return firstLeaf.parent;
   }
-  resolveNotes(project) {
-    return project.lastOpenNotes.map((n) => ({
+  resolveNotes(list) {
+    return list.map((n) => ({
       file: this.app.vault.getAbstractFileByPath(n.path),
       eState: n.eState,
       active: n.active === true
@@ -399,31 +440,77 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       (n) => n.file instanceof import_obsidian.TFile
     );
   }
+  /** Create a new empty pane for a project and switch to it. */
+  async addPane(project, name) {
+    const pane = {
+      id: genId(),
+      name: name.trim() || `Pane ${project.panes.length + 1}`,
+      lastOpenNotes: []
+    };
+    project.panes.push(pane);
+    await this.persistNow();
+    await this.showPane(project, pane.id);
+  }
+  async renamePaneItem(project, paneId, name) {
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (!pane)
+      return;
+    pane.name = name.trim() || pane.name;
+    await this.persistNow();
+    this.refreshContentView();
+  }
+  async deletePaneItem(project, paneId) {
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group))
+          toClose.push(leaf);
+      });
+      for (const leaf of toClose)
+        leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    project.panes = project.panes.filter((p) => p.id !== paneId);
+    await this.persistNow();
+    if (project.activePaneId === paneId) {
+      await this.showPane(project, null);
+    } else {
+      this.refreshContentView();
+    }
+  }
   /** The container element of a tab group, or null if it's gone. */
   groupContainer(group) {
     const el = group.containerEl;
     return el != null ? el : null;
   }
-  /** Return the project's tab group if it still exists in the layout. */
-  getLiveGroup(projectId) {
-    if (!projectId)
+  /** Return the pane's tab group if it still exists in the layout. */
+  getLiveGroup(key) {
+    if (!key)
       return null;
-    const group = this.projectGroups.get(projectId);
+    const group = this.projectGroups.get(key);
     if (!group)
       return null;
     const el = this.groupContainer(group);
     if (!el || !el.isConnected) {
-      this.projectGroups.delete(projectId);
+      this.projectGroups.delete(key);
       return null;
     }
     return group;
   }
   getActiveGroup() {
-    return this.getLiveGroup(this.data.activeProjectId);
+    var _a;
+    const project = this.getActiveProject();
+    if (!project)
+      return null;
+    return this.getLiveGroup(
+      this.paneKey(project.id, (_a = project.activePaneId) != null ? _a : null)
+    );
   }
   hasAnyLiveGroup() {
-    for (const [id] of this.projectGroups) {
-      if (this.getLiveGroup(id))
+    for (const [key] of this.projectGroups) {
+      if (this.getLiveGroup(key))
         return true;
     }
     return false;
@@ -471,16 +558,19 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
    * new tab so the project always has a visible pane.
    */
   onLayoutChange() {
+    var _a;
     if (this.isActivating)
       return;
     const project = this.getActiveProject();
     if (!project)
       return;
-    if (this.getLiveGroup(project.id)) {
+    const paneId = (_a = project.activePaneId) != null ? _a : null;
+    const key = this.paneKey(project.id, paneId);
+    if (this.getLiveGroup(key)) {
       this.saveActiveProjectTabs();
     } else {
-      project.lastOpenNotes = [];
-      void this.openProject(project);
+      this.setPaneNotes(project, paneId, []);
+      void this.showPane(project, paneId);
     }
   }
   /** Focus the active project's pane (used before opening a note into it). */
@@ -490,19 +580,20 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       this.focusGroup(group);
   }
   saveActiveProjectTabs(force = false) {
-    var _a;
+    var _a, _b;
     if (this.isActivating && !force)
       return -1;
     const project = this.getActiveProject();
     if (!project)
       return -1;
-    const group = this.getLiveGroup(project.id);
+    const paneId = (_a = project.activePaneId) != null ? _a : null;
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
     if (!group)
       return -1;
     const activeLeaf = this.app.workspace.getMostRecentLeaf(
       this.app.workspace.rootSplit
     );
-    const activePath = (_a = activeLeaf == null ? void 0 : activeLeaf.getViewState().state) == null ? void 0 : _a.file;
+    const activePath = (_b = activeLeaf == null ? void 0 : activeLeaf.getViewState().state) == null ? void 0 : _b.file;
     const open = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
       var _a2;
@@ -517,13 +608,14 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
         });
       }
     });
-    project.lastOpenNotes = open;
+    this.setPaneNotes(project, paneId, open);
     void this.persist();
     return open.length;
   }
   async deleteProject(project) {
-    const group = this.projectGroups.get(project.id);
-    if (group) {
+    for (const [key, group] of [...this.projectGroups]) {
+      if (key !== project.id && !key.startsWith(project.id + "::"))
+        continue;
       const toClose = [];
       this.app.workspace.iterateRootLeaves((leaf) => {
         if (this.leafInGroup(leaf, group))
@@ -531,7 +623,7 @@ var RecentViewPlugin = class extends import_obsidian.Plugin {
       });
       for (const leaf of toClose)
         leaf.detach();
-      this.projectGroups.delete(project.id);
+      this.projectGroups.delete(key);
     }
     this.data.projects = this.data.projects.filter((p) => p.id !== project.id);
     if (this.data.activeProjectId === project.id) {
@@ -652,6 +744,18 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
       const menu = new import_obsidian.Menu();
+      if (project) {
+        menu.addItem(
+          (item) => item.setTitle("New pane").setIcon("plus").onClick(
+            () => new PromptModal(
+              this.plugin.app,
+              "New pane",
+              `Pane ${project.panes.length + 1}`,
+              (name) => void this.plugin.addPane(project, name)
+            ).open()
+          )
+        );
+      }
       menu.addItem(
         (item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => this.render())
       );
@@ -667,6 +771,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     if (project.description) {
       info.createDiv({ cls: "rv-project-desc", text: project.description });
     }
+    this.renderPanes(c, project);
     const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile);
     if (pinnedFiles.length > 0) {
       const section = c.createDiv({ cls: "rv-folder-section rv-pinned-section" });
@@ -741,6 +846,68 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       for (const file of looseNotes)
         this.renderFileItem(fileList, file);
     }
+  }
+  /** List the project's panes (main + named) when it has named panes. */
+  renderPanes(c, project) {
+    var _a;
+    if (!project.panes || project.panes.length === 0)
+      return;
+    const activePaneId = (_a = project.activePaneId) != null ? _a : null;
+    const section = c.createDiv({ cls: "rv-folder-section rv-panes-section" });
+    const head = section.createDiv({ cls: "rv-folder-head" });
+    (0, import_obsidian.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
+    head.createSpan({ text: "Panes" });
+    const list = section.createDiv({ cls: "rv-file-list" });
+    this.renderPaneItem(list, project, null, "Main", activePaneId === null);
+    for (const pane of project.panes) {
+      this.renderPaneItem(
+        list,
+        project,
+        pane.id,
+        pane.name,
+        activePaneId === pane.id
+      );
+    }
+  }
+  renderPaneItem(list, project, paneId, name, isActive) {
+    const item = list.createDiv({ cls: "rv-file-item rv-pane-item" });
+    if (isActive)
+      item.addClass("is-active");
+    (0, import_obsidian.setIcon)(
+      item.createSpan({ cls: "rv-file-icon" }),
+      paneId ? "gallery-vertical" : "home"
+    );
+    item.createSpan({ cls: "rv-file-name", text: name });
+    item.onclick = () => void this.plugin.showPane(project, paneId);
+    if (!paneId)
+      return;
+    const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
+    (0, import_obsidian.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Pane options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new import_obsidian.Menu();
+      menu.addItem(
+        (i) => i.setTitle("Rename").setIcon("pencil").onClick(
+          () => new PromptModal(
+            this.plugin.app,
+            "Rename pane",
+            name,
+            (v) => void this.plugin.renamePaneItem(project, paneId, v)
+          ).open()
+        )
+      );
+      menu.addItem(
+        (i) => i.setTitle("Delete pane").setIcon("trash-2").onClick(
+          () => new ConfirmModal(
+            this.plugin.app,
+            `Delete pane "${name}"?`,
+            () => void this.plugin.deletePaneItem(project, paneId)
+          ).open()
+        )
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
   }
   renderFileItem(container, file) {
     const item = container.createDiv({ cls: "rv-file-item" });
@@ -1019,6 +1186,8 @@ var ProjectEditModal = class extends import_obsidian.Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
+        panes: [],
+        activePaneId: null,
         pinned: []
       });
     }
@@ -1082,6 +1251,48 @@ var ConfirmModal = class extends import_obsidian.Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
+  }
+};
+var PromptModal = class extends import_obsidian.Modal {
+  constructor(app, titleText, defaultValue, onSubmit) {
+    super(app);
+    this.titleText = titleText;
+    this.value = defaultValue;
+    this.onSubmit = onSubmit;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: this.titleText });
+    let inputEl = null;
+    new import_obsidian.Setting(contentEl).setName("Name").addText((t) => {
+      t.setValue(this.value).onChange((v) => this.value = v);
+      inputEl = t.inputEl;
+      t.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.submit();
+        }
+      });
+    });
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "OK" });
+    ok.onclick = () => this.submit();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    window.setTimeout(() => {
+      inputEl == null ? void 0 : inputEl.focus();
+      inputEl == null ? void 0 : inputEl.select();
+    }, 0);
+  }
+  submit() {
+    const v = this.value.trim();
+    if (!v) {
+      new import_obsidian.Notice("Name is required");
+      return;
+    }
+    this.onSubmit(v);
+    this.close();
   }
 };
 var RecentViewSettingTab = class extends import_obsidian.PluginSettingTab {

@@ -29,13 +29,24 @@ interface OpenNote {
   active?: boolean;
 }
 
+interface ProjectPane {
+  id: string;
+  name: string;
+  lastOpenNotes: OpenNote[];
+}
+
 interface Project {
   id: string;
   name: string;
   description: string;
   folders: string[];
   notes: string[];
+  // Open tabs of the project's main (default) pane.
   lastOpenNotes: OpenNote[];
+  // Additional named panes; each keeps its own set of open tabs.
+  panes: ProjectPane[];
+  // Which pane is currently shown: null/undefined = the main pane.
+  activePaneId?: string | null;
   // Note paths pinned to the top of the content pane, above the folders.
   pinned: string[];
 }
@@ -228,11 +239,19 @@ export default class RecentViewPlugin extends Plugin {
     }
 
     // Migrate lastOpenNotes from the old string[] format to OpenNote[].
+    const migrateNotes = (list: unknown): OpenNote[] =>
+      ((list ?? []) as (string | OpenNote)[]).map((n) =>
+        typeof n === "string" ? { path: n } : n
+      );
     for (const project of this.data.projects) {
-      project.lastOpenNotes = (
-        (project.lastOpenNotes ?? []) as unknown as (string | OpenNote)[]
-      ).map((n) => (typeof n === "string" ? { path: n } : n));
+      project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
       project.pinned = project.pinned ?? [];
+      project.panes = (project.panes ?? []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        lastOpenNotes: migrateNotes(p.lastOpenNotes),
+      }));
+      if (project.activePaneId === undefined) project.activePaneId = null;
     }
   }
 
@@ -314,14 +333,16 @@ export default class RecentViewPlugin extends Plugin {
       if (before !== after) changed = true;
       return after;
     };
+    const remapNotes = (list: OpenNote[]): OpenNote[] =>
+      list.map((n) => ({ ...n, path: track(n.path, remap(n.path)) }));
     for (const project of this.data.projects) {
       project.folders = project.folders.map((f) => track(f, remap(f)));
       project.notes = project.notes.map((n) => track(n, remap(n)));
       project.pinned = (project.pinned ?? []).map((p) => track(p, remap(p)));
-      project.lastOpenNotes = project.lastOpenNotes.map((n) => ({
-        ...n,
-        path: track(n.path, remap(n.path)),
-      }));
+      project.lastOpenNotes = remapNotes(project.lastOpenNotes);
+      for (const pane of project.panes ?? []) {
+        pane.lastOpenNotes = remapNotes(pane.lastOpenNotes);
+      }
     }
     if (changed) void this.persist();
   }
@@ -394,26 +415,60 @@ export default class RecentViewPlugin extends Plugin {
    * their tabs keep their full editor state.
    */
   async openProject(project: Project): Promise<void> {
-    // Snapshot the outgoing project's tabs (only if it has a live pane).
+    await this.showPane(project, project.activePaneId ?? null);
+  }
+
+  /** Unique key for a project's pane (main pane uses just the project id). */
+  private paneKey(projectId: string, paneId: string | null): string {
+    return paneId ? `${projectId}::${paneId}` : projectId;
+  }
+
+  /** The open-tabs list for a given pane (main pane stored on the project). */
+  private paneNotes(project: Project, paneId: string | null): OpenNote[] {
+    if (!paneId) return project.lastOpenNotes;
+    return project.panes.find((p) => p.id === paneId)?.lastOpenNotes ?? [];
+  }
+
+  private setPaneNotes(
+    project: Project,
+    paneId: string | null,
+    notes: OpenNote[]
+  ): void {
+    if (!paneId) {
+      project.lastOpenNotes = notes;
+      return;
+    }
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane) pane.lastOpenNotes = notes;
+  }
+
+  /**
+   * Show a specific pane of a project: hide every other pane, restore (or
+   * create) this one's tab group.
+   */
+  async showPane(project: Project, paneId: string | null): Promise<void> {
+    // Snapshot the currently visible pane before switching away.
     this.saveActiveProjectTabs();
 
     this.isActivating = true;
     this.data.activeProjectId = project.id;
+    project.activePaneId = paneId;
 
     // Update the selection UI synchronously.
     this.refreshListView();
     void this.activateContentView();
 
+    const key = this.paneKey(project.id, paneId);
     try {
-      let group = this.getLiveGroup(project.id);
-      if (!group) group = await this.createProjectGroup(project);
+      let group = this.getLiveGroup(key);
+      if (!group) group = await this.createPaneGroup(project, paneId);
       if (group) {
-        this.projectGroups.set(project.id, group);
-        this.applyGroupVisibility(project.id);
+        this.projectGroups.set(key, group);
+        this.applyGroupVisibility(key);
         this.focusGroup(group);
       }
     } catch (e) {
-      console.error("[RecentView] failed to open project pane", e);
+      console.error("[RecentView] failed to open pane", e);
     }
 
     await this.persist();
@@ -424,17 +479,18 @@ export default class RecentViewPlugin extends Plugin {
     }, 150);
   }
 
-  /** Build a new tab group for a project from its saved notes. */
-  private async createProjectGroup(
-    project: Project
+  /** Build a new tab group for a pane from its saved notes. */
+  private async createPaneGroup(
+    project: Project,
+    paneId: string | null
   ): Promise<WorkspaceParent | null> {
-    const notes = this.resolveNotes(project);
+    const notes = this.resolveNotes(this.paneNotes(project, paneId));
     const { workspace } = this.app;
 
     let firstLeaf: WorkspaceLeaf;
     if (!this.hasAnyLiveGroup()) {
-      // No project pane exists yet: adopt the current main area by keeping one
-      // leaf (so a tab group survives) and closing the rest.
+      // No pane exists yet: adopt the current main area by keeping one leaf (so
+      // a tab group survives) and closing the rest.
       const existing: WorkspaceLeaf[] = [];
       workspace.iterateRootLeaves((leaf) => {
         existing.push(leaf);
@@ -469,12 +525,12 @@ export default class RecentViewPlugin extends Plugin {
     return firstLeaf.parent;
   }
 
-  private resolveNotes(project: Project): {
+  private resolveNotes(list: OpenNote[]): {
     file: TFile;
     eState: Record<string, unknown> | undefined;
     active: boolean;
   }[] {
-    return project.lastOpenNotes
+    return list
       .map((n) => ({
         file: this.app.vault.getAbstractFileByPath(n.path),
         eState: n.eState,
@@ -489,32 +545,81 @@ export default class RecentViewPlugin extends Plugin {
       );
   }
 
+  /** Create a new empty pane for a project and switch to it. */
+  async addPane(project: Project, name: string): Promise<void> {
+    const pane: ProjectPane = {
+      id: genId(),
+      name: name.trim() || `Pane ${project.panes.length + 1}`,
+      lastOpenNotes: [],
+    };
+    project.panes.push(pane);
+    await this.persistNow();
+    await this.showPane(project, pane.id);
+  }
+
+  async renamePaneItem(
+    project: Project,
+    paneId: string,
+    name: string
+  ): Promise<void> {
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (!pane) return;
+    pane.name = name.trim() || pane.name;
+    await this.persistNow();
+    this.refreshContentView();
+  }
+
+  async deletePaneItem(project: Project, paneId: string): Promise<void> {
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group)) toClose.push(leaf);
+      });
+      for (const leaf of toClose) leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    project.panes = project.panes.filter((p) => p.id !== paneId);
+    await this.persistNow();
+    // If the deleted pane was active, fall back to the main pane.
+    if (project.activePaneId === paneId) {
+      await this.showPane(project, null);
+    } else {
+      this.refreshContentView();
+    }
+  }
+
   /** The container element of a tab group, or null if it's gone. */
   private groupContainer(group: WorkspaceParent): HTMLElement | null {
     const el = (group as unknown as { containerEl?: HTMLElement }).containerEl;
     return el ?? null;
   }
 
-  /** Return the project's tab group if it still exists in the layout. */
-  private getLiveGroup(projectId: string | null): WorkspaceParent | null {
-    if (!projectId) return null;
-    const group = this.projectGroups.get(projectId);
+  /** Return the pane's tab group if it still exists in the layout. */
+  private getLiveGroup(key: string | null): WorkspaceParent | null {
+    if (!key) return null;
+    const group = this.projectGroups.get(key);
     if (!group) return null;
     const el = this.groupContainer(group);
     if (!el || !el.isConnected) {
-      this.projectGroups.delete(projectId);
+      this.projectGroups.delete(key);
       return null;
     }
     return group;
   }
 
   getActiveGroup(): WorkspaceParent | null {
-    return this.getLiveGroup(this.data.activeProjectId);
+    const project = this.getActiveProject();
+    if (!project) return null;
+    return this.getLiveGroup(
+      this.paneKey(project.id, project.activePaneId ?? null)
+    );
   }
 
   private hasAnyLiveGroup(): boolean {
-    for (const [id] of this.projectGroups) {
-      if (this.getLiveGroup(id)) return true;
+    for (const [key] of this.projectGroups) {
+      if (this.getLiveGroup(key)) return true;
     }
     return false;
   }
@@ -568,12 +673,14 @@ export default class RecentViewPlugin extends Plugin {
     if (this.isActivating) return;
     const project = this.getActiveProject();
     if (!project) return;
-    if (this.getLiveGroup(project.id)) {
+    const paneId = project.activePaneId ?? null;
+    const key = this.paneKey(project.id, paneId);
+    if (this.getLiveGroup(key)) {
       this.saveActiveProjectTabs();
     } else {
-      // All tabs closed: reopen the project's pane as an empty new tab.
-      project.lastOpenNotes = [];
-      void this.openProject(project);
+      // All tabs closed: reopen the active pane as an empty new tab.
+      this.setPaneNotes(project, paneId, []);
+      void this.showPane(project, paneId);
     }
   }
 
@@ -587,7 +694,8 @@ export default class RecentViewPlugin extends Plugin {
     if (this.isActivating && !force) return -1;
     const project = this.getActiveProject();
     if (!project) return -1;
-    const group = this.getLiveGroup(project.id);
+    const paneId = project.activePaneId ?? null;
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
     if (!group) return -1; // No live pane yet (e.g. startup): nothing to save.
 
     const activeLeaf = this.app.workspace.getMostRecentLeaf(
@@ -597,7 +705,7 @@ export default class RecentViewPlugin extends Plugin {
 
     const open: OpenNote[] = [];
     this.app.workspace.iterateRootLeaves((leaf) => {
-      // Only capture tabs that belong to this project's pane.
+      // Only capture tabs that belong to this pane.
       if (!this.leafInGroup(leaf, group)) return;
       // Read the file path from the view state rather than leaf.view.file:
       // background tabs are deferred in Obsidian 1.7+, so their view has no
@@ -611,21 +719,21 @@ export default class RecentViewPlugin extends Plugin {
         });
       }
     });
-    project.lastOpenNotes = open;
+    this.setPaneNotes(project, paneId, open);
     void this.persist();
     return open.length;
   }
 
   async deleteProject(project: Project): Promise<void> {
-    // Close the project's pane if it is live.
-    const group = this.projectGroups.get(project.id);
-    if (group) {
+    // Close every live pane belonging to this project.
+    for (const [key, group] of [...this.projectGroups]) {
+      if (key !== project.id && !key.startsWith(project.id + "::")) continue;
       const toClose: WorkspaceLeaf[] = [];
       this.app.workspace.iterateRootLeaves((leaf) => {
         if (this.leafInGroup(leaf, group)) toClose.push(leaf);
       });
       for (const leaf of toClose) leaf.detach();
-      this.projectGroups.delete(project.id);
+      this.projectGroups.delete(key);
     }
 
     this.data.projects = this.data.projects.filter((p) => p.id !== project.id);
@@ -777,6 +885,21 @@ class ProjectContentView extends ItemView {
     menuBtn.setAttribute("aria-label", "More options");
     menuBtn.onclick = (e) => {
       const menu = new Menu();
+      if (project) {
+        menu.addItem((item) =>
+          item
+            .setTitle("New pane")
+            .setIcon("plus")
+            .onClick(() =>
+              new PromptModal(
+                this.plugin.app,
+                "New pane",
+                `Pane ${project.panes.length + 1}`,
+                (name) => void this.plugin.addPane(project, name)
+              ).open()
+            )
+        );
+      }
       menu.addItem((item) =>
         item
           .setTitle("Refresh")
@@ -797,6 +920,8 @@ class ProjectContentView extends ItemView {
     if (project.description) {
       info.createDiv({ cls: "rv-project-desc", text: project.description });
     }
+
+    this.renderPanes(c, project);
 
     // Pinned notes, shown above all folders in their saved (drag-reorderable)
     // order.
@@ -887,6 +1012,78 @@ class ProjectContentView extends ItemView {
         .sort((a, b) => a.basename.localeCompare(b.basename));
       for (const file of looseNotes) this.renderFileItem(fileList, file);
     }
+  }
+
+  /** List the project's panes (main + named) when it has named panes. */
+  private renderPanes(c: HTMLElement, project: Project): void {
+    if (!project.panes || project.panes.length === 0) return;
+    const activePaneId = project.activePaneId ?? null;
+    const section = c.createDiv({ cls: "rv-folder-section rv-panes-section" });
+    const head = section.createDiv({ cls: "rv-folder-head" });
+    setIcon(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
+    head.createSpan({ text: "Panes" });
+    const list = section.createDiv({ cls: "rv-file-list" });
+
+    this.renderPaneItem(list, project, null, "Main", activePaneId === null);
+    for (const pane of project.panes) {
+      this.renderPaneItem(
+        list,
+        project,
+        pane.id,
+        pane.name,
+        activePaneId === pane.id
+      );
+    }
+  }
+
+  private renderPaneItem(
+    list: HTMLElement,
+    project: Project,
+    paneId: string | null,
+    name: string,
+    isActive: boolean
+  ): void {
+    const item = list.createDiv({ cls: "rv-file-item rv-pane-item" });
+    if (isActive) item.addClass("is-active");
+    setIcon(
+      item.createSpan({ cls: "rv-file-icon" }),
+      paneId ? "gallery-vertical" : "home"
+    );
+    item.createSpan({ cls: "rv-file-name", text: name });
+    item.onclick = () => void this.plugin.showPane(project, paneId);
+
+    if (!paneId) return; // The main pane can't be renamed or deleted.
+
+    const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Pane options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Rename")
+          .setIcon("pencil")
+          .onClick(() =>
+            new PromptModal(this.plugin.app, "Rename pane", name, (v) =>
+              void this.plugin.renamePaneItem(project, paneId, v)
+            ).open()
+          )
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Delete pane")
+          .setIcon("trash-2")
+          .onClick(() =>
+            new ConfirmModal(
+              this.plugin.app,
+              `Delete pane "${name}"?`,
+              () => void this.plugin.deletePaneItem(project, paneId)
+            ).open()
+          )
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
   }
 
   private renderFileItem(container: HTMLElement, file: TFile): HTMLElement {
@@ -1223,6 +1420,8 @@ class ProjectEditModal extends Modal {
         folders: this.folders,
         notes: this.notes,
         lastOpenNotes: [],
+        panes: [],
+        activePaneId: null,
         pinned: [],
       });
     }
@@ -1302,6 +1501,63 @@ class ConfirmModal extends Modal {
     };
     const no = footer.createEl("button", { text: "Cancel" });
     no.onclick = () => this.close();
+  }
+}
+
+class PromptModal extends Modal {
+  private titleText: string;
+  private value: string;
+  private onSubmit: (value: string) => void;
+
+  constructor(
+    app: App,
+    titleText: string,
+    defaultValue: string,
+    onSubmit: (value: string) => void
+  ) {
+    super(app);
+    this.titleText = titleText;
+    this.value = defaultValue;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: this.titleText });
+
+    let inputEl: HTMLInputElement | null = null;
+    new Setting(contentEl).setName("Name").addText((t) => {
+      t.setValue(this.value).onChange((v) => (this.value = v));
+      inputEl = t.inputEl;
+      t.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.submit();
+        }
+      });
+    });
+
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "OK" });
+    ok.onclick = () => this.submit();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+
+    window.setTimeout(() => {
+      inputEl?.focus();
+      inputEl?.select();
+    }, 0);
+  }
+
+  private submit(): void {
+    const v = this.value.trim();
+    if (!v) {
+      new Notice("Name is required");
+      return;
+    }
+    this.onSubmit(v);
+    this.close();
   }
 }
 
