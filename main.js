@@ -611,8 +611,9 @@ var ProjectContentView = class extends import_obsidian.ItemView {
     c.empty();
     c.addClass("recent-view-content");
     const header = c.createDiv({ cls: "rv-content-header" });
+    const info = header.createDiv({ cls: "rv-content-headinfo" });
     const project = this.plugin.getActiveProject();
-    header.createEl("h4", {
+    info.createEl("h4", {
       cls: "rv-content-title",
       text: project ? project.name : "Project contents"
     });
@@ -636,7 +637,7 @@ var ProjectContentView = class extends import_obsidian.ItemView {
       return;
     }
     if (project.description) {
-      c.createDiv({ cls: "rv-project-desc", text: project.description });
+      info.createDiv({ cls: "rv-project-desc", text: project.description });
     }
     const pinnedFiles = ((_a = project.pinned) != null ? _a : []).map((path) => this.plugin.app.vault.getAbstractFileByPath(path)).filter((f) => f instanceof import_obsidian.TFile);
     if (pinnedFiles.length > 0) {

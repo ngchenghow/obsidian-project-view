@@ -111,9 +111,14 @@
 
 .recent-view-content .rv-content-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.recent-view-content .rv-content-headinfo {
+  flex: 1;
+  min-width: 0;
 }
 
 .recent-view-content .rv-content-title {
@@ -126,6 +131,7 @@
 
 .recent-view-content .rv-content-menu {
   flex-shrink: 0;
+  margin-top: 8px;
   opacity: 0;
 }
 

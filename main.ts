@@ -723,8 +723,9 @@ class ProjectContentView extends ItemView {
     c.addClass("recent-view-content");
 
     const header = c.createDiv({ cls: "rv-content-header" });
+    const info = header.createDiv({ cls: "rv-content-headinfo" });
     const project = this.plugin.getActiveProject();
-    header.createEl("h4", {
+    info.createEl("h4", {
       cls: "rv-content-title",
       text: project ? project.name : "Project contents",
     });
@@ -753,7 +754,7 @@ class ProjectContentView extends ItemView {
     }
 
     if (project.description) {
-      c.createDiv({ cls: "rv-project-desc", text: project.description });
+      info.createDiv({ cls: "rv-project-desc", text: project.description });
     }
 
     // Pinned notes, shown above all folders in their saved (drag-reorderable)
