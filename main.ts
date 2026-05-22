@@ -302,6 +302,31 @@ export default class RecentViewPlugin extends Plugin {
       )
     );
 
+    // Add "Add to current project" to the native file/folder context menu.
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        const project = this.getActiveProject();
+        if (!project) return;
+        if (file instanceof TFolder) {
+          if (project.folders.includes(file.path)) return;
+          menu.addItem((i) =>
+            i
+              .setTitle(`Add folder to project "${project.name}"`)
+              .setIcon("folder-plus")
+              .onClick(() => void this.addFolderToProject(project, file))
+          );
+        } else if (file instanceof TFile) {
+          if (project.notes.includes(file.path)) return;
+          menu.addItem((i) =>
+            i
+              .setTitle(`Add note to project "${project.name}"`)
+              .setIcon("file-plus")
+              .onClick(() => void this.addNoteToProject(project, file))
+          );
+        }
+      })
+    );
+
     this.app.workspace.onLayoutReady(() => {
       this.arrangeLeftSidebar();
 

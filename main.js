@@ -561,6 +561,26 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         () => this.refreshOpenHighlights()
       )
     );
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        const project = this.getActiveProject();
+        if (!project)
+          return;
+        if (file instanceof import_obsidian2.TFolder) {
+          if (project.folders.includes(file.path))
+            return;
+          menu.addItem(
+            (i) => i.setTitle(`Add folder to project "${project.name}"`).setIcon("folder-plus").onClick(() => void this.addFolderToProject(project, file))
+          );
+        } else if (file instanceof import_obsidian2.TFile) {
+          if (project.notes.includes(file.path))
+            return;
+          menu.addItem(
+            (i) => i.setTitle(`Add note to project "${project.name}"`).setIcon("file-plus").onClick(() => void this.addNoteToProject(project, file))
+          );
+        }
+      })
+    );
     this.app.workspace.onLayoutReady(() => {
       this.arrangeLeftSidebar();
       const active = this.getActiveProject();
