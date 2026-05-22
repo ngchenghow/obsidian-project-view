@@ -555,6 +555,12 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.onLayoutChange())
     );
+    this.registerEvent(
+      this.app.workspace.on(
+        "active-leaf-change",
+        () => this.refreshOpenHighlights()
+      )
+    );
     this.app.workspace.onLayoutReady(() => {
       this.arrangeLeftSidebar();
       const active = this.getActiveProject();
@@ -867,6 +873,16 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     )) {
       if (leaf.view instanceof ProjectContentView)
         leaf.view.render();
+    }
+  }
+  /** Update only the open-note highlights (no full re-render). */
+  refreshOpenHighlights() {
+    for (const leaf of this.app.workspace.getLeavesOfType(
+      VIEW_TYPE_PROJECT_CONTENT
+    )) {
+      if (leaf.view instanceof ProjectContentView) {
+        leaf.view.updateOpenHighlights();
+      }
     }
   }
   /**
@@ -1270,6 +1286,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const key = this.paneKey(project.id, paneId);
     if (this.getLiveGroup(key)) {
       this.saveActiveProjectTabs();
+      this.refreshOpenHighlights();
     } else {
       this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
       this.setPaneNotes(project, paneId, []);
@@ -1807,6 +1824,26 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       for (const file of looseNotes)
         this.renderFileItem(fileList, file);
     }
+    this.updateOpenHighlights();
+  }
+  /** Grey-highlight note items that are open as tabs in the active pane. */
+  updateOpenHighlights() {
+    const open = /* @__PURE__ */ new Set();
+    const group = this.plugin.getActiveGroup();
+    if (group) {
+      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+        var _a;
+        if (!this.plugin.leafInGroup(leaf, group))
+          return;
+        const p = (_a = leaf.getViewState().state) == null ? void 0 : _a.file;
+        if (typeof p === "string")
+          open.add(p);
+      });
+    }
+    this.contentEl.querySelectorAll(".rv-file-item[data-rv-path]").forEach((el) => {
+      var _a;
+      el.toggleClass("is-open", open.has((_a = el.dataset.rvPath) != null ? _a : ""));
+    });
   }
   /** List the project's panes (main + named) when it has named panes. */
   renderPanes(c, project) {
@@ -1944,6 +1981,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
   }
   renderFileItem(container, file) {
     const item = container.createDiv({ cls: "rv-file-item" });
+    item.dataset.rvPath = file.path;
     (0, import_obsidian2.setIcon)(item.createSpan({ cls: "rv-file-icon" }), "file");
     item.createSpan({ cls: "rv-file-name", text: file.basename });
     item.onclick = () => this.openOrFocus(file);

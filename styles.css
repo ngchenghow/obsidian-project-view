@@ -226,7 +226,8 @@
   color: var(--text-accent);
 }
 
-.rv-file-item:hover {
+.rv-file-item:hover,
+.rv-file-item.is-open {
   background: var(--background-modifier-hover);
 }
 
