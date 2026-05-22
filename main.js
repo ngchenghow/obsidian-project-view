@@ -1826,23 +1826,12 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     }
     this.updateOpenHighlights();
   }
-  /** Grey-highlight note items that are open as tabs in the active pane. */
+  /** Grey-highlight the note item for the currently active note. */
   updateOpenHighlights() {
-    const open = /* @__PURE__ */ new Set();
-    const group = this.plugin.getActiveGroup();
-    if (group) {
-      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
-        var _a;
-        if (!this.plugin.leafInGroup(leaf, group))
-          return;
-        const p = (_a = leaf.getViewState().state) == null ? void 0 : _a.file;
-        if (typeof p === "string")
-          open.add(p);
-      });
-    }
+    var _a;
+    const activePath = (_a = this.plugin.app.workspace.getActiveFile()) == null ? void 0 : _a.path;
     this.contentEl.querySelectorAll(".rv-file-item[data-rv-path]").forEach((el) => {
-      var _a;
-      el.toggleClass("is-open", open.has((_a = el.dataset.rvPath) != null ? _a : ""));
+      el.toggleClass("is-open", el.dataset.rvPath === activePath);
     });
   }
   /** List the project's panes (main + named) when it has named panes. */

@@ -1761,21 +1761,13 @@ class ProjectContentView extends ItemView {
     this.updateOpenHighlights();
   }
 
-  /** Grey-highlight note items that are open as tabs in the active pane. */
+  /** Grey-highlight the note item for the currently active note. */
   updateOpenHighlights(): void {
-    const open = new Set<string>();
-    const group = this.plugin.getActiveGroup();
-    if (group) {
-      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
-        if (!this.plugin.leafInGroup(leaf, group)) return;
-        const p = leaf.getViewState().state?.file;
-        if (typeof p === "string") open.add(p);
-      });
-    }
+    const activePath = this.plugin.app.workspace.getActiveFile()?.path;
     this.contentEl
       .querySelectorAll<HTMLElement>(".rv-file-item[data-rv-path]")
       .forEach((el) => {
-        el.toggleClass("is-open", open.has(el.dataset.rvPath ?? ""));
+        el.toggleClass("is-open", el.dataset.rvPath === activePath);
       });
   }
 
