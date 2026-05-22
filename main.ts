@@ -1930,6 +1930,7 @@ class ProjectContentView extends ItemView {
           .setIcon("file-plus")
           .onClick(() => void this.plugin.createNoteInFolder(folder))
       );
+      menu.addSeparator();
       menu.addItem((i) =>
         i
           .setTitle("Rename")

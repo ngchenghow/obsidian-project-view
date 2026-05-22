@@ -1957,6 +1957,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       menu.addItem(
         (i) => i.setTitle("New note").setIcon("file-plus").onClick(() => void this.plugin.createNoteInFolder(folder))
       );
+      menu.addSeparator();
       menu.addItem(
         (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
       );
