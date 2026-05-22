@@ -389,12 +389,13 @@ export default class RecentViewPlugin extends Plugin {
     for (const project of this.data.projects) {
       project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
       project.lastClosedNotes = migrateNotes(project.lastClosedNotes);
+      if (project.defaultTabs) project.defaultTabs = migrateNotes(project.defaultTabs);
       project.pinned = project.pinned ?? [];
       project.panes = (project.panes ?? []).map((p) => ({
-        id: p.id,
-        name: p.name,
+        ...p,
         lastOpenNotes: migrateNotes(p.lastOpenNotes),
         lastClosedNotes: migrateNotes(p.lastClosedNotes),
+        defaultTabs: p.defaultTabs ? migrateNotes(p.defaultTabs) : undefined,
       }));
       if (project.activePaneId === undefined) project.activePaneId = null;
     }

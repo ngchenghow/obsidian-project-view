@@ -630,12 +630,14 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     for (const project of this.data.projects) {
       project.lastOpenNotes = migrateNotes(project.lastOpenNotes);
       project.lastClosedNotes = migrateNotes(project.lastClosedNotes);
+      if (project.defaultTabs)
+        project.defaultTabs = migrateNotes(project.defaultTabs);
       project.pinned = (_f = project.pinned) != null ? _f : [];
       project.panes = ((_g = project.panes) != null ? _g : []).map((p) => ({
-        id: p.id,
-        name: p.name,
+        ...p,
         lastOpenNotes: migrateNotes(p.lastOpenNotes),
-        lastClosedNotes: migrateNotes(p.lastClosedNotes)
+        lastClosedNotes: migrateNotes(p.lastClosedNotes),
+        defaultTabs: p.defaultTabs ? migrateNotes(p.defaultTabs) : void 0
       }));
       if (project.activePaneId === void 0)
         project.activePaneId = null;
