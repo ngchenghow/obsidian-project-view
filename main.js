@@ -703,8 +703,8 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
-  /** Create a new note inside a folder and open it in the active pane. */
-  async createNoteInFolder(folder, name) {
+  /** Create an untitled note inside a folder and open it ready for naming. */
+  async createNoteInFolder(folder, name = "") {
     const base = (name.trim() || "Untitled").replace(/[\\/:*?"<>|]/g, "_");
     const dir = folder.path === "/" ? "" : folder.path;
     let path = dir ? `${dir}/${base}.md` : `${base}.md`;
@@ -716,7 +716,18 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     try {
       const file = await this.app.vault.create(path, "");
       this.focusActiveGroup();
-      await this.app.workspace.getLeaf("tab").openFile(file);
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(file);
+      window.setTimeout(() => {
+        var _a;
+        const titleEl = leaf.view.containerEl.querySelector(
+          ".inline-title"
+        );
+        if (titleEl) {
+          titleEl.focus();
+          (_a = document.getSelection()) == null ? void 0 : _a.selectAllChildren(titleEl);
+        }
+      }, 50);
     } catch (e) {
       new import_obsidian2.Notice(`Couldn't create note: ${e.message}`);
     }
@@ -1944,14 +1955,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
       menu.addItem(
-        (i) => i.setTitle("New note").setIcon("file-plus").onClick(
-          () => new PromptModal(
-            this.plugin.app,
-            "New note",
-            "Untitled",
-            (n) => void this.plugin.createNoteInFolder(folder, n)
-          ).open()
-        )
+        (i) => i.setTitle("New note").setIcon("file-plus").onClick(() => void this.plugin.createNoteInFolder(folder))
       );
       menu.addItem(
         (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())

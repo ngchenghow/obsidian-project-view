@@ -468,8 +468,8 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshContentView();
   }
 
-  /** Create a new note inside a folder and open it in the active pane. */
-  async createNoteInFolder(folder: TFolder, name: string): Promise<void> {
+  /** Create an untitled note inside a folder and open it ready for naming. */
+  async createNoteInFolder(folder: TFolder, name = ""): Promise<void> {
     const base = (name.trim() || "Untitled").replace(/[\\/:*?"<>|]/g, "_");
     const dir = folder.path === "/" ? "" : folder.path;
     let path = dir ? `${dir}/${base}.md` : `${base}.md`;
@@ -481,7 +481,18 @@ export default class RecentViewPlugin extends Plugin {
     try {
       const file = await this.app.vault.create(path, "");
       this.focusActiveGroup();
-      await this.app.workspace.getLeaf("tab").openFile(file);
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(file);
+      // Focus the inline title so the user can name the note immediately.
+      window.setTimeout(() => {
+        const titleEl = leaf.view.containerEl.querySelector<HTMLElement>(
+          ".inline-title"
+        );
+        if (titleEl) {
+          titleEl.focus();
+          document.getSelection()?.selectAllChildren(titleEl);
+        }
+      }, 50);
     } catch (e) {
       new Notice(`Couldn't create note: ${(e as Error).message}`);
     }
@@ -1917,11 +1928,7 @@ class ProjectContentView extends ItemView {
         i
           .setTitle("New note")
           .setIcon("file-plus")
-          .onClick(() =>
-            new PromptModal(this.plugin.app, "New note", "Untitled", (n) =>
-              void this.plugin.createNoteInFolder(folder, n)
-            ).open()
-          )
+          .onClick(() => void this.plugin.createNoteInFolder(folder))
       );
       menu.addItem((i) =>
         i
