@@ -1969,6 +1969,10 @@ class ProjectContentView extends ItemView {
       e.stopPropagation();
       this.showFileMenu(e, file, menuBtn);
     };
+    item.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.showFileMenu(e, file, menuBtn);
+    });
     return item;
   }
 
