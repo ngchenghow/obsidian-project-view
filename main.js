@@ -1875,6 +1875,9 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
+      menu.addItem(
+        (i) => i.setTitle("Open default tabs").setIcon("layout-list").setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false).onClick(() => void this.plugin.openDefaultTabs(project, paneId))
+      );
       const lastClosed = this.plugin.lastClosedNote(project, paneId);
       menu.addItem(
         (i) => i.setTitle("Open last closed tab").setIcon("undo-2").setDisabled(!lastClosed).onClick(
@@ -1912,9 +1915,6 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       menu.addSeparator();
       menu.addItem(
         (i) => i.setTitle("Save current tabs as default").setIcon("save").onClick(() => this.plugin.saveDefaultTabs(project, paneId))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Open default tabs").setIcon("layout-list").setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false).onClick(() => void this.plugin.openDefaultTabs(project, paneId))
       );
       if (paneId) {
         menu.addSeparator();

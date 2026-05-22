@@ -1816,6 +1816,13 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Open default tabs")
+          .setIcon("layout-list")
+          .setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false)
+          .onClick(() => void this.plugin.openDefaultTabs(project, paneId))
+      );
       const lastClosed = this.plugin.lastClosedNote(project, paneId);
       menu.addItem((i) =>
         i
@@ -1872,13 +1879,6 @@ class ProjectContentView extends ItemView {
           .setTitle("Save current tabs as default")
           .setIcon("save")
           .onClick(() => this.plugin.saveDefaultTabs(project, paneId))
-      );
-      menu.addItem((i) =>
-        i
-          .setTitle("Open default tabs")
-          .setIcon("layout-list")
-          .setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false)
-          .onClick(() => void this.plugin.openDefaultTabs(project, paneId))
       );
       // Rename/Delete only apply to named (non-main) panes.
       if (paneId) {
