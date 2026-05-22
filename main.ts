@@ -1371,25 +1371,33 @@ class ProjectListView extends ItemView {
 
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    if (this.plugin.data.projects.length > 1) {
-      const reorderBtn = header.createEl("button", { cls: "rv-icon-btn" });
-      if (this.reordering) reorderBtn.addClass("is-active");
-      setIcon(reorderBtn, this.reordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.reordering ? "Done reordering" : "Reorder projects"
-      );
-      reorderBtn.onclick = () => {
-        this.reordering = !this.reordering;
-        this.render();
-      };
-    }
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
     });
     addBtn.onclick = () =>
       new ProjectEditModal(this.plugin.app, this.plugin, null).open();
+
+    const menuBtn = headerActions.createEl("button", { cls: "rv-icon-btn" });
+    if (this.reordering) menuBtn.addClass("is-active");
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Projects options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle(this.reordering ? "Done reordering" : "Reorder projects")
+          .setIcon(this.reordering ? "check" : "arrow-up-down")
+          .setDisabled(this.plugin.data.projects.length < 2)
+          .onClick(() => {
+            this.reordering = !this.reordering;
+            this.render();
+          })
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
 
     const list = c.createDiv({ cls: "rv-project-list" });
     if (this.reordering) list.addClass("rv-reordering");
@@ -1700,23 +1708,25 @@ class ProjectContentView extends ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     setIcon(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
-    // Reorder toggle (only the named panes can be reordered).
-    if (project.panes.length > 1) {
-      const reorderBtn = head.createEl("button", {
-        cls: "rv-icon-btn rv-head-menu",
-      });
-      if (this.panesReordering) reorderBtn.addClass("is-active");
-      setIcon(reorderBtn, this.panesReordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.panesReordering ? "Done reordering" : "Reorder panes"
+    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
+    if (this.panesReordering) menuBtn.addClass("is-active");
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Panes options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle(this.panesReordering ? "Done reordering" : "Reorder panes")
+          .setIcon(this.panesReordering ? "check" : "arrow-up-down")
+          .setDisabled(project.panes.length < 2)
+          .onClick(() => {
+            this.panesReordering = !this.panesReordering;
+            this.render();
+          })
       );
-      reorderBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.panesReordering = !this.panesReordering;
-        this.render();
-      };
-    }
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
     const list = section.createDiv({ cls: "rv-file-list" });
 
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);

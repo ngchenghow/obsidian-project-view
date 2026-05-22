@@ -1502,25 +1502,28 @@ var ProjectListView = class extends import_obsidian2.ItemView {
     c.addClass("recent-view-list");
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    if (this.plugin.data.projects.length > 1) {
-      const reorderBtn = header.createEl("button", { cls: "rv-icon-btn" });
-      if (this.reordering)
-        reorderBtn.addClass("is-active");
-      (0, import_obsidian2.setIcon)(reorderBtn, this.reordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.reordering ? "Done reordering" : "Reorder projects"
-      );
-      reorderBtn.onclick = () => {
-        this.reordering = !this.reordering;
-        this.render();
-      };
-    }
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
     addBtn.onclick = () => new ProjectEditModal(this.plugin.app, this.plugin, null).open();
+    const menuBtn = headerActions.createEl("button", { cls: "rv-icon-btn" });
+    if (this.reordering)
+      menuBtn.addClass("is-active");
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Projects options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new import_obsidian2.Menu();
+      menu.addItem(
+        (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder projects").setIcon(this.reordering ? "check" : "arrow-up-down").setDisabled(this.plugin.data.projects.length < 2).onClick(() => {
+          this.reordering = !this.reordering;
+          this.render();
+        })
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
     const list = c.createDiv({ cls: "rv-project-list" });
     if (this.reordering)
       list.addClass("rv-reordering");
@@ -1550,10 +1553,10 @@ var ProjectListView = class extends import_obsidian2.ItemView {
         info.createDiv({ cls: "rv-project-desc", text: project.description });
       }
       const actions = box.createDiv({ cls: "rv-project-actions" });
-      const menuBtn = actions.createEl("button", { cls: "rv-icon-btn" });
-      (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
-      menuBtn.setAttribute("aria-label", "Project options");
-      menuBtn.onclick = (e) => {
+      const menuBtn2 = actions.createEl("button", { cls: "rv-icon-btn" });
+      (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
+      menuBtn2.setAttribute("aria-label", "Project options");
+      menuBtn2.onclick = (e) => {
         e.stopPropagation();
         const menu = new import_obsidian2.Menu();
         menu.addItem(
@@ -1594,7 +1597,7 @@ var ProjectListView = class extends import_obsidian2.ItemView {
             ).open()
           )
         );
-        showMenu(menu, e, this.contentEl, menuBtn);
+        showMenu(menu, e, this.contentEl, menuBtn2);
       };
       box.onclick = () => {
         if (this.reordering)
@@ -1772,23 +1775,22 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
-    if (project.panes.length > 1) {
-      const reorderBtn = head.createEl("button", {
-        cls: "rv-icon-btn rv-head-menu"
-      });
-      if (this.panesReordering)
-        reorderBtn.addClass("is-active");
-      (0, import_obsidian2.setIcon)(reorderBtn, this.panesReordering ? "check" : "arrow-up-down");
-      reorderBtn.setAttribute(
-        "aria-label",
-        this.panesReordering ? "Done reordering" : "Reorder panes"
+    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
+    if (this.panesReordering)
+      menuBtn.addClass("is-active");
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Panes options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new import_obsidian2.Menu();
+      menu.addItem(
+        (i) => i.setTitle(this.panesReordering ? "Done reordering" : "Reorder panes").setIcon(this.panesReordering ? "check" : "arrow-up-down").setDisabled(project.panes.length < 2).onClick(() => {
+          this.panesReordering = !this.panesReordering;
+          this.render();
+        })
       );
-      reorderBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.panesReordering = !this.panesReordering;
-        this.render();
-      };
-    }
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
     const list = section.createDiv({ cls: "rv-file-list" });
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
     for (const pane of project.panes) {

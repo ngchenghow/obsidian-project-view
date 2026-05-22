@@ -13,6 +13,13 @@
   font-size: var(--font-ui-medium);
 }
 
+.rv-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .rv-new-btn {
   cursor: pointer;
 }
