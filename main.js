@@ -377,13 +377,15 @@ var GoogleDriveClient = class {
 // main.ts
 var VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 var VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
+var DEFAULT_DATA_NOTE = "ProjectView.md";
+var LEGACY_DATA_NOTE = "RecentView.md";
 var DEFAULT_SETTINGS = {
-  dataNotePath: "RecentView.md",
+  dataNotePath: DEFAULT_DATA_NOTE,
   gdriveClientId: "",
   gdriveClientSecret: "",
   gdriveRefreshToken: ""
 };
-var DATA_NOTE_HEADER = "# Recent View data\n\nThis note is managed by the **Recent View** plugin and stores this vault's projects. Avoid editing the JSON block below by hand.";
+var DATA_NOTE_HEADER = "# ProjectView data\n\nThis note is managed by the **ProjectView** plugin and stores this vault's projects. Avoid editing the JSON block below by hand.";
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -526,9 +528,23 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       gdriveClientSecret: (_c = stored.gdriveClientSecret) != null ? _c : "",
       gdriveRefreshToken: (_d = stored.gdriveRefreshToken) != null ? _d : ""
     };
-    const fromNote = await this.readDataNote();
+    let fromNote = await this.readDataNote();
+    let needsWrite = false;
+    if (!fromNote && this.settings.dataNotePath !== LEGACY_DATA_NOTE && await this.app.vault.adapter.exists(LEGACY_DATA_NOTE)) {
+      try {
+        fromNote = parseDataNote(
+          await this.app.vault.adapter.read(LEGACY_DATA_NOTE)
+        );
+      } catch (e) {
+        fromNote = null;
+      }
+      if (fromNote)
+        needsWrite = true;
+    }
     if (fromNote) {
       this.data = fromNote;
+      if (needsWrite)
+        await this.writeDataNote();
     } else if (stored.projects) {
       this.data = {
         projects: stored.projects,

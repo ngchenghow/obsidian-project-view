@@ -1,6 +1,6 @@
 {
-  "id": "obsidian-recent-view",
-  "name": "Recent View",
+  "id": "obsidian-project-view",
+  "name": "ProjectView",
   "version": "1.0.0",
   "minAppVersion": "1.4.0",
   "description": "Organize notes into projects. Each project tracks its folders, notes and last-open tabs - click a project to instantly restore its workspace.",

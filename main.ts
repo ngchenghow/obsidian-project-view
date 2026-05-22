@@ -76,8 +76,12 @@ interface RecentViewSettings {
   gdriveRefreshToken: string;
 }
 
+const DEFAULT_DATA_NOTE = "ProjectView.md";
+// Older releases stored data here; read from it if the new note is missing.
+const LEGACY_DATA_NOTE = "RecentView.md";
+
 const DEFAULT_SETTINGS: RecentViewSettings = {
-  dataNotePath: "RecentView.md",
+  dataNotePath: DEFAULT_DATA_NOTE,
   gdriveClientId: "",
   gdriveClientSecret: "",
   gdriveRefreshToken: "",
@@ -85,8 +89,8 @@ const DEFAULT_SETTINGS: RecentViewSettings = {
 
 // Header written above the JSON block so the note is self-explanatory.
 const DATA_NOTE_HEADER =
-  "# Recent View data\n\n" +
-  "This note is managed by the **Recent View** plugin and stores this " +
+  "# ProjectView data\n\n" +
+  "This note is managed by the **ProjectView** plugin and stores this " +
   "vault's projects. Avoid editing the JSON block below by hand.";
 
 function genId(): string {
@@ -261,9 +265,26 @@ export default class RecentViewPlugin extends Plugin {
       gdriveRefreshToken: stored.gdriveRefreshToken ?? "",
     };
 
-    const fromNote = await this.readDataNote();
+    let fromNote = await this.readDataNote();
+    let needsWrite = false;
+    // Migrate from the old default note name if the current one is missing.
+    if (
+      !fromNote &&
+      this.settings.dataNotePath !== LEGACY_DATA_NOTE &&
+      (await this.app.vault.adapter.exists(LEGACY_DATA_NOTE))
+    ) {
+      try {
+        fromNote = parseDataNote(
+          await this.app.vault.adapter.read(LEGACY_DATA_NOTE)
+        );
+      } catch {
+        fromNote = null;
+      }
+      if (fromNote) needsWrite = true;
+    }
     if (fromNote) {
       this.data = fromNote;
+      if (needsWrite) await this.writeDataNote();
     } else if (stored.projects) {
       // Migrate project data that used to live in data.json into the note.
       this.data = {

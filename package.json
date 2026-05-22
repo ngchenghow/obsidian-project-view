@@ -1,7 +1,7 @@
 {
-  "name": "obsidian-recent-view",
+  "name": "obsidian-project-view",
   "version": "1.0.0",
-  "description": "Obsidian plugin: project-based recent view with last-open tab restore.",
+  "description": "Obsidian plugin: project-based workspace with per-project panes, pinned notes and Google Drive sync.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

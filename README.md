@@ -1,4 +1,4 @@
-# Recent View
+# ProjectView
 
 An [Obsidian](https://obsidian.md) plugin that organizes your notes into **projects**. Each project keeps its own set of folders and notes, remembers the tabs you had open, and can sync with a Google Drive folder.
 
@@ -50,15 +50,15 @@ A project lives as a pane in the left sidebar; clicking it instantly restores th
 
 This plugin isn't in the community store. To install manually:
 
-1. Create the folder `<your-vault>/.obsidian/plugins/obsidian-recent-view/`.
+1. Create the folder `<your-vault>/.obsidian/plugins/obsidian-project-view/`.
 2. Copy `manifest.json`, `main.js`, and `styles.css` into it.
-3. In Obsidian, enable **Recent View** under **Settings → Community plugins**.
+3. In Obsidian, enable **ProjectView** under **Settings → Community plugins**.
 
 ---
 
 ## Data storage
 
-Projects are stored in a **note inside your vault** (default `RecentView.md`, configurable in settings) as a JSON code block — so the data is per‑vault and travels/syncs with your vault. Plugin settings (and Drive credentials) live in the plugin's `data.json`.
+Projects are stored in a **note inside your vault** (default `ProjectView.md`, configurable in settings) as a JSON code block — so the data is per‑vault and travels/syncs with your vault. Plugin settings (and Drive credentials) live in the plugin's `data.json`. (Data from an older `RecentView.md` note is migrated automatically.)
 
 ---
 
@@ -67,7 +67,7 @@ Projects are stored in a **note inside your vault** (default `RecentView.md`, co
 1. In the [Google Cloud Console](https://console.cloud.google.com/): create a project and enable the **Google Drive API**.
 2. Create an **OAuth client ID** of type **Desktop app**.
 3. Add yourself as a test user on the OAuth consent screen (or publish it).
-4. In **Settings → Recent View → Google Drive**, paste the **Client ID** and **Client Secret**, then click **Connect** and authorize in your browser.
+4. In **Settings → ProjectView → Google Drive**, paste the **Client ID** and **Client Secret**, then click **Connect** and authorize in your browser.
 
 You need **edit access** to a shared folder for uploads to work.
 
