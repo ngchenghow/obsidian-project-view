@@ -1427,6 +1427,13 @@ class ProjectListView extends ItemView {
       const menu = new Menu();
       menu.addItem((i) =>
         i
+          .setTitle("Back to last project")
+          .setIcon("arrow-left")
+          .setDisabled(!this.plugin.canGoBack())
+          .onClick(() => void this.plugin.goBack())
+      );
+      menu.addItem((i) =>
+        i
           .setTitle(this.reordering ? "Done reordering" : "Reorder projects")
           .setIcon(this.reordering ? "check" : "arrow-up-down")
           .setDisabled(this.plugin.data.projects.length < 2)
@@ -1438,16 +1445,7 @@ class ProjectListView extends ItemView {
       showMenu(menu, e, this.contentEl, menuBtn);
     };
 
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const backBtn = headerActions.createEl("button", {
-      cls: "rv-icon-btn rv-back-btn",
-    });
-    setIcon(backBtn, "arrow-left");
-    backBtn.setAttribute("aria-label", "Back to last project");
-    backBtn.disabled = !this.plugin.canGoBack();
-    backBtn.onclick = () => void this.plugin.goBack();
-
-    const addBtn = headerActions.createEl("button", {
+    const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
     });

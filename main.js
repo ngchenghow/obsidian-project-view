@@ -1561,6 +1561,9 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       e.stopPropagation();
       const menu = new import_obsidian2.Menu();
       menu.addItem(
+        (i) => i.setTitle("Back to last project").setIcon("arrow-left").setDisabled(!this.plugin.canGoBack()).onClick(() => void this.plugin.goBack())
+      );
+      menu.addItem(
         (i) => i.setTitle(this.reordering ? "Done reordering" : "Reorder projects").setIcon(this.reordering ? "check" : "arrow-up-down").setDisabled(this.plugin.data.projects.length < 2).onClick(() => {
           this.reordering = !this.reordering;
           this.render();
@@ -1568,15 +1571,7 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       );
       showMenu(menu, e, this.contentEl, menuBtn);
     };
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const backBtn = headerActions.createEl("button", {
-      cls: "rv-icon-btn rv-back-btn"
-    });
-    (0, import_obsidian2.setIcon)(backBtn, "arrow-left");
-    backBtn.setAttribute("aria-label", "Back to last project");
-    backBtn.disabled = !this.plugin.canGoBack();
-    backBtn.onclick = () => void this.plugin.goBack();
-    const addBtn = headerActions.createEl("button", {
+    const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
