@@ -752,19 +752,10 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     if (changed)
       void this.persist();
   }
-  /** Reorder pinned notes: move fromPath next to toPath (after or before). */
-  async movePin(project, fromPath, toPath, after) {
+  /** Set the order of pinned notes. */
+  async setPinnedOrder(project, orderedPaths) {
     var _a;
-    const pinned = (_a = project.pinned) != null ? _a : project.pinned = [];
-    const from = pinned.indexOf(fromPath);
-    if (from < 0)
-      return;
-    pinned.splice(from, 1);
-    const target = pinned.indexOf(toPath);
-    if (target < 0)
-      pinned.push(fromPath);
-    else
-      pinned.splice(after ? target + 1 : target, 0, fromPath);
+    project.pinned = applyOrder((_a = project.pinned) != null ? _a : [], (p) => p, orderedPaths);
     await this.persistNow();
     this.refreshContentView();
   }
@@ -1710,7 +1701,13 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       for (const file of pinnedFiles) {
         const item = this.renderFileItem(fileList, file);
         if (this.reordering)
-          this.makePinDraggable(item, file, project);
+          item.dataset.rvId = file.path;
+      }
+      if (this.reordering) {
+        enableReorder(
+          fileList,
+          (ids) => void this.plugin.setPinnedOrder(project, ids)
+        );
       }
     } else if (this.reordering) {
       this.reordering = false;
@@ -1952,43 +1949,6 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       );
     }
     showMenu(menu, e, this.contentEl, btn);
-  }
-  /** Make a pinned item draggable so the pinned list can be reordered. */
-  makePinDraggable(item, file, project) {
-    item.draggable = true;
-    item.addClass("rv-pin-draggable");
-    item.addEventListener("dragstart", (e) => {
-      var _a;
-      (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", file.path);
-      if (e.dataTransfer)
-        e.dataTransfer.effectAllowed = "move";
-      item.addClass("rv-dragging");
-    });
-    item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
-    item.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      if (e.dataTransfer)
-        e.dataTransfer.dropEffect = "move";
-      const rect = item.getBoundingClientRect();
-      const after = e.clientY > rect.top + rect.height / 2;
-      item.toggleClass("rv-drop-after", after);
-      item.toggleClass("rv-drop-before", !after);
-    });
-    item.addEventListener("dragleave", () => {
-      item.removeClass("rv-drop-before");
-      item.removeClass("rv-drop-after");
-    });
-    item.addEventListener("drop", (e) => {
-      var _a;
-      e.preventDefault();
-      const after = item.hasClass("rv-drop-after");
-      item.removeClass("rv-drop-before");
-      item.removeClass("rv-drop-after");
-      const fromPath = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-      if (fromPath && fromPath !== file.path) {
-        void this.plugin.movePin(project, fromPath, file.path, after);
-      }
-    });
   }
   openOrFocus(file) {
     const { workspace } = this.plugin.app;
