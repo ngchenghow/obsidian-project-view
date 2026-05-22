@@ -703,6 +703,24 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
+  /** Create a new note inside a folder and open it in the active pane. */
+  async createNoteInFolder(folder, name) {
+    const base = (name.trim() || "Untitled").replace(/[\\/:*?"<>|]/g, "_");
+    const dir = folder.path === "/" ? "" : folder.path;
+    let path = dir ? `${dir}/${base}.md` : `${base}.md`;
+    let i = 1;
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      path = dir ? `${dir}/${base} ${i}.md` : `${base} ${i}.md`;
+      i++;
+    }
+    try {
+      const file = await this.app.vault.create(path, "");
+      this.focusActiveGroup();
+      await this.app.workspace.getLeaf("tab").openFile(file);
+    } catch (e) {
+      new import_obsidian2.Notice(`Couldn't create note: ${e.message}`);
+    }
+  }
   async addFolderToProject(project, folder) {
     if (!project.folders.includes(folder.path)) {
       project.folders.push(folder.path);
@@ -1621,7 +1639,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     this.render();
   }
   render() {
-    var _a, _b;
+    var _a;
     const c = this.contentEl;
     c.empty();
     c.addClass("recent-view-content");
@@ -1716,38 +1734,29 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     }
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
-      const section = c.createDiv({ cls: "rv-folder-section" });
-      const head = section.createDiv({ cls: "rv-folder-head" });
-      (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
-      head.createSpan({ text: (_b = folder == null ? void 0 : folder.name) != null ? _b : folderPath });
-      const menuBtn2 = head.createEl("button", {
-        cls: "rv-icon-btn rv-head-menu"
-      });
-      (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
-      menuBtn2.setAttribute("aria-label", "More options");
-      menuBtn2.onclick = (e) => {
-        e.stopPropagation();
-        const menu = new import_obsidian2.Menu();
-        if (folder instanceof import_obsidian2.TFolder) {
-          menu.addItem(
-            (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
-          );
-        }
-        menu.addItem(
-          (i) => i.setTitle("Remove from project").setIcon("x").onClick(
-            () => void this.plugin.removeFolderFromProject(project, folderPath)
-          )
-        );
-        showMenu(menu, e, this.contentEl, menuBtn2);
-      };
-      const fileList = section.createDiv({ cls: "rv-file-list" });
       if (folder instanceof import_obsidian2.TFolder) {
-        const count = this.renderFolderTree(fileList, folder);
-        if (count === 0) {
-          fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
-        }
+        this.renderFolderSection(c, project, folder, 0, folderPath);
       } else {
-        fileList.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
+        const section = c.createDiv({ cls: "rv-folder-section" });
+        const head = section.createDiv({ cls: "rv-folder-head" });
+        (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
+        head.createSpan({ text: folderPath });
+        const menuBtn2 = head.createEl("button", {
+          cls: "rv-icon-btn rv-head-menu"
+        });
+        (0, import_obsidian2.setIcon)(menuBtn2, "more-vertical");
+        menuBtn2.setAttribute("aria-label", "Folder options");
+        menuBtn2.onclick = (e) => {
+          e.stopPropagation();
+          const menu = new import_obsidian2.Menu();
+          menu.addItem(
+            (i) => i.setTitle("Remove from project").setIcon("x").onClick(
+              () => void this.plugin.removeFolderFromProject(project, folderPath)
+            )
+          );
+          showMenu(menu, e, this.contentEl, menuBtn2);
+        };
+        section.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
       }
     }
     if (project.notes.length > 0) {
@@ -1914,23 +1923,60 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
    * separator labelled with the subfolder name (recursively). Returns the total
    * number of notes rendered.
    */
-  renderFolderTree(container, folder) {
+  /**
+   * Render a folder as a section (header + notes), recursing into subfolders
+   * which are rendered the same way (indented). projectFolderPath is set only
+   * for a project's top-level folders (enables "Remove from project").
+   */
+  renderFolderSection(container, project, folder, depth, projectFolderPath) {
+    const section = container.createDiv({ cls: "rv-folder-section" });
+    if (depth > 0)
+      section.style.paddingLeft = `${depth * 14}px`;
+    const head = section.createDiv({ cls: "rv-folder-head" });
+    (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
+    head.createSpan({ text: folder.name });
+    const menuBtn = head.createEl("button", {
+      cls: "rv-icon-btn rv-head-menu"
+    });
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Folder options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new import_obsidian2.Menu();
+      menu.addItem(
+        (i) => i.setTitle("New note").setIcon("file-plus").onClick(
+          () => new PromptModal(
+            this.plugin.app,
+            "New note",
+            "Untitled",
+            (n) => void this.plugin.createNoteInFolder(folder, n)
+          ).open()
+        )
+      );
+      menu.addItem(
+        (i) => i.setTitle("Rename").setIcon("pencil").onClick(() => new RenameModal(this.plugin.app, folder).open())
+      );
+      if (projectFolderPath) {
+        menu.addItem(
+          (i) => i.setTitle("Remove from project").setIcon("x").onClick(
+            () => void this.plugin.removeFolderFromProject(project, projectFolderPath)
+          )
+        );
+      }
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
+    const fileList = section.createDiv({ cls: "rv-file-list" });
     const children = [...folder.children];
     const files = children.filter((c) => c instanceof import_obsidian2.TFile && c.extension === "md").sort((a, b) => a.basename.localeCompare(b.basename));
-    const subfolders = children.filter((c) => c instanceof import_obsidian2.TFolder).sort((a, b) => a.name.localeCompare(b.name));
-    let count = 0;
-    for (const f of files) {
-      this.renderFileItem(container, f);
-      count++;
-    }
+    const subfolders = children.filter((c) => c instanceof import_obsidian2.TFolder && countMarkdown(c) > 0).sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of files)
+      this.renderFileItem(fileList, f);
     for (const sub of subfolders) {
-      if (countMarkdown(sub) === 0)
-        continue;
-      const sep = container.createDiv({ cls: "rv-subfolder-sep" });
-      sep.createSpan({ cls: "rv-subfolder-label", text: sub.name });
-      count += this.renderFolderTree(container, sub);
+      this.renderFolderSection(fileList, project, sub, depth + 1, null);
     }
-    return count;
+    if (files.length === 0 && subfolders.length === 0) {
+      fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
+    }
   }
   showFileMenu(e, file, btn) {
     var _a;

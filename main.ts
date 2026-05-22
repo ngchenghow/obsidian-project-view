@@ -468,6 +468,25 @@ export default class RecentViewPlugin extends Plugin {
     this.refreshContentView();
   }
 
+  /** Create a new note inside a folder and open it in the active pane. */
+  async createNoteInFolder(folder: TFolder, name: string): Promise<void> {
+    const base = (name.trim() || "Untitled").replace(/[\\/:*?"<>|]/g, "_");
+    const dir = folder.path === "/" ? "" : folder.path;
+    let path = dir ? `${dir}/${base}.md` : `${base}.md`;
+    let i = 1;
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      path = dir ? `${dir}/${base} ${i}.md` : `${base} ${i}.md`;
+      i++;
+    }
+    try {
+      const file = await this.app.vault.create(path, "");
+      this.focusActiveGroup();
+      await this.app.workspace.getLeaf("tab").openFile(file);
+    } catch (e) {
+      new Notice(`Couldn't create note: ${(e as Error).message}`);
+    }
+  }
+
   async addFolderToProject(project: Project, folder: TFolder): Promise<void> {
     if (!project.folders.includes(folder.path)) {
       project.folders.push(folder.path);
@@ -1635,45 +1654,32 @@ class ProjectContentView extends ItemView {
 
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
-      const section = c.createDiv({ cls: "rv-folder-section" });
-      const head = section.createDiv({ cls: "rv-folder-head" });
-      setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
-      head.createSpan({ text: folder?.name ?? folderPath });
-      const menuBtn = head.createEl("button", {
-        cls: "rv-icon-btn rv-head-menu",
-      });
-      setIcon(menuBtn, "more-vertical");
-      menuBtn.setAttribute("aria-label", "More options");
-      menuBtn.onclick = (e) => {
-        e.stopPropagation();
-        const menu = new Menu();
-        if (folder instanceof TFolder) {
+      if (folder instanceof TFolder) {
+        this.renderFolderSection(c, project, folder, 0, folderPath);
+      } else {
+        const section = c.createDiv({ cls: "rv-folder-section" });
+        const head = section.createDiv({ cls: "rv-folder-head" });
+        setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
+        head.createSpan({ text: folderPath });
+        const menuBtn = head.createEl("button", {
+          cls: "rv-icon-btn rv-head-menu",
+        });
+        setIcon(menuBtn, "more-vertical");
+        menuBtn.setAttribute("aria-label", "Folder options");
+        menuBtn.onclick = (e) => {
+          e.stopPropagation();
+          const menu = new Menu();
           menu.addItem((i) =>
             i
-              .setTitle("Rename")
-              .setIcon("pencil")
-              .onClick(() => new RenameModal(this.plugin.app, folder).open())
+              .setTitle("Remove from project")
+              .setIcon("x")
+              .onClick(() =>
+                void this.plugin.removeFolderFromProject(project, folderPath)
+              )
           );
-        }
-        menu.addItem((i) =>
-          i
-            .setTitle("Remove from project")
-            .setIcon("x")
-            .onClick(() =>
-              void this.plugin.removeFolderFromProject(project, folderPath)
-            )
-        );
-        showMenu(menu, e, this.contentEl, menuBtn);
-      };
-
-      const fileList = section.createDiv({ cls: "rv-file-list" });
-      if (folder instanceof TFolder) {
-        const count = this.renderFolderTree(fileList, folder);
-        if (count === 0) {
-          fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
-        }
-      } else {
-        fileList.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
+          showMenu(menu, e, this.contentEl, menuBtn);
+        };
+        section.createDiv({ cls: "rv-empty-sm", text: "Folder not found" });
       }
     }
 
@@ -1882,27 +1888,76 @@ class ProjectContentView extends ItemView {
    * separator labelled with the subfolder name (recursively). Returns the total
    * number of notes rendered.
    */
-  private renderFolderTree(container: HTMLElement, folder: TFolder): number {
+  /**
+   * Render a folder as a section (header + notes), recursing into subfolders
+   * which are rendered the same way (indented). projectFolderPath is set only
+   * for a project's top-level folders (enables "Remove from project").
+   */
+  private renderFolderSection(
+    container: HTMLElement,
+    project: Project,
+    folder: TFolder,
+    depth: number,
+    projectFolderPath: string | null
+  ): void {
+    const section = container.createDiv({ cls: "rv-folder-section" });
+    if (depth > 0) section.style.paddingLeft = `${depth * 14}px`;
+    const head = section.createDiv({ cls: "rv-folder-head" });
+    setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
+    head.createSpan({ text: folder.name });
+    const menuBtn = head.createEl("button", {
+      cls: "rv-icon-btn rv-head-menu",
+    });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Folder options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("New note")
+          .setIcon("file-plus")
+          .onClick(() =>
+            new PromptModal(this.plugin.app, "New note", "Untitled", (n) =>
+              void this.plugin.createNoteInFolder(folder, n)
+            ).open()
+          )
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Rename")
+          .setIcon("pencil")
+          .onClick(() => new RenameModal(this.plugin.app, folder).open())
+      );
+      if (projectFolderPath) {
+        menu.addItem((i) =>
+          i
+            .setTitle("Remove from project")
+            .setIcon("x")
+            .onClick(() =>
+              void this.plugin.removeFolderFromProject(project, projectFolderPath)
+            )
+        );
+      }
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
+
+    const fileList = section.createDiv({ cls: "rv-file-list" });
     const children = [...folder.children];
     const files = children
       .filter((c): c is TFile => c instanceof TFile && c.extension === "md")
       .sort((a, b) => a.basename.localeCompare(b.basename));
     const subfolders = children
-      .filter((c): c is TFolder => c instanceof TFolder)
+      .filter((c): c is TFolder => c instanceof TFolder && countMarkdown(c) > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    let count = 0;
-    for (const f of files) {
-      this.renderFileItem(container, f);
-      count++;
-    }
+    for (const f of files) this.renderFileItem(fileList, f);
     for (const sub of subfolders) {
-      if (countMarkdown(sub) === 0) continue;
-      const sep = container.createDiv({ cls: "rv-subfolder-sep" });
-      sep.createSpan({ cls: "rv-subfolder-label", text: sub.name });
-      count += this.renderFolderTree(container, sub);
+      this.renderFolderSection(fileList, project, sub, depth + 1, null);
     }
-    return count;
+    if (files.length === 0 && subfolders.length === 0) {
+      fileList.createDiv({ cls: "rv-empty-sm", text: "No notes" });
+    }
   }
 
   private showFileMenu(e: MouseEvent, file: TFile, btn: HTMLElement): void {
