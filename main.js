@@ -1252,32 +1252,19 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     this.refreshContentView();
     new import_obsidian2.Notice(`Saved ${tabs.length} default tab(s) for this pane.`);
   }
-  /** Reopen a pane's saved default tabs (switching to that pane). */
+  /** Open a pane's saved default tabs as tabs in that pane. */
   async openDefaultTabs(project, paneId) {
     const defaults = this.paneDefaultTabs(project, paneId);
     if (defaults.length === 0) {
       new import_obsidian2.Notice("No default tabs saved for this pane.");
       return;
     }
-    this.setPaneNotes(
-      project,
-      paneId,
-      defaults.map((n) => ({ ...n }))
-    );
-    this.isActivating = true;
-    const key = this.paneKey(project.id, paneId);
-    const group = this.projectGroups.get(key);
-    if (group) {
-      const toClose = [];
-      this.app.workspace.iterateRootLeaves((leaf) => {
-        if (this.leafInGroup(leaf, group))
-          toClose.push(leaf);
-      });
-      for (const leaf of toClose)
-        leaf.detach();
-      this.projectGroups.delete(key);
-    }
     await this.showPane(project, paneId);
+    for (const note of defaults) {
+      const file = this.app.vault.getAbstractFileByPath(note.path);
+      if (file instanceof import_obsidian2.TFile)
+        await this.openNoteStateInActivePane(note, file);
+    }
   }
   async deleteProject(project) {
     for (const [key, group] of [...this.projectGroups]) {
