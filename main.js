@@ -2000,6 +2000,16 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
         (i) => i.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadFileToDrive(project, file))
       );
     }
+    menu.addSeparator();
+    menu.addItem(
+      (i) => i.setTitle("Delete").setIcon("trash-2").onClick(
+        () => new ConfirmModal(
+          this.plugin.app,
+          `Delete "${file.basename}"?`,
+          () => void this.plugin.app.fileManager.trashFile(file)
+        ).open()
+      )
+    );
     showMenu(menu, e, this.contentEl, btn);
   }
   openOrFocus(file) {
