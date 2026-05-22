@@ -231,6 +231,8 @@ export default class RecentViewPlugin extends Plugin {
   // Live tab group (pane) per project, kept alive so switching just shows/hides
   // panes instead of closing and reopening notes.
   private projectGroups: Map<string, WorkspaceParent> = new Map();
+  // Stack of previously-active project ids, for the back button.
+  private navHistory: string[] = [];
   private _drive: GoogleDriveClient | null = null;
 
   get drive(): GoogleDriveClient {
@@ -645,7 +647,31 @@ export default class RecentViewPlugin extends Plugin {
    * their tabs keep their full editor state.
    */
   async openProject(project: Project): Promise<void> {
+    // Record the project we're leaving so the back button can return to it.
+    const current = this.data.activeProjectId;
+    if (current && current !== project.id) {
+      this.navHistory.push(current);
+      if (this.navHistory.length > 50) this.navHistory.shift();
+    }
     await this.showPane(project, project.activePaneId ?? null);
+  }
+
+  canGoBack(): boolean {
+    return this.navHistory.length > 0;
+  }
+
+  /** Return to the most recently selected project. */
+  async goBack(): Promise<void> {
+    while (this.navHistory.length > 0) {
+      const id = this.navHistory.pop();
+      const project = this.data.projects.find((p) => p.id === id);
+      if (project && project.id !== this.data.activeProjectId) {
+        // showPane (not openProject) so we don't push history again.
+        await this.showPane(project, project.activePaneId ?? null);
+        return;
+      }
+    }
+    new Notice("No previous project.");
   }
 
   /** Unique key for a project's pane (main pane uses just the project id). */
@@ -1412,7 +1438,16 @@ class ProjectListView extends ItemView {
       showMenu(menu, e, this.contentEl, menuBtn);
     };
 
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const backBtn = headerActions.createEl("button", {
+      cls: "rv-icon-btn rv-back-btn",
+    });
+    setIcon(backBtn, "arrow-left");
+    backBtn.setAttribute("aria-label", "Back to last project");
+    backBtn.disabled = !this.plugin.canGoBack();
+    backBtn.onclick = () => void this.plugin.goBack();
+
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
     });

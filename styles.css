@@ -20,6 +20,18 @@
   min-width: 0;
 }
 
+.rv-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.rv-icon-btn:disabled {
+  opacity: 0.35 !important;
+  cursor: default;
+}
+
 .rv-header-menu {
   flex-shrink: 0;
   opacity: 0;

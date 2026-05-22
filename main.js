@@ -501,6 +501,8 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     // Live tab group (pane) per project, kept alive so switching just shows/hides
     // panes instead of closing and reopening notes.
     this.projectGroups = /* @__PURE__ */ new Map();
+    // Stack of previously-active project ids, for the back button.
+    this.navHistory = [];
     this._drive = null;
   }
   get drive() {
@@ -874,7 +876,29 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    */
   async openProject(project) {
     var _a;
+    const current = this.data.activeProjectId;
+    if (current && current !== project.id) {
+      this.navHistory.push(current);
+      if (this.navHistory.length > 50)
+        this.navHistory.shift();
+    }
     await this.showPane(project, (_a = project.activePaneId) != null ? _a : null);
+  }
+  canGoBack() {
+    return this.navHistory.length > 0;
+  }
+  /** Return to the most recently selected project. */
+  async goBack() {
+    var _a;
+    while (this.navHistory.length > 0) {
+      const id = this.navHistory.pop();
+      const project = this.data.projects.find((p) => p.id === id);
+      if (project && project.id !== this.data.activeProjectId) {
+        await this.showPane(project, (_a = project.activePaneId) != null ? _a : null);
+        return;
+      }
+    }
+    new import_obsidian2.Notice("No previous project.");
   }
   /** Unique key for a project's pane (main pane uses just the project id). */
   paneKey(projectId, paneId) {
@@ -1544,7 +1568,15 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       );
       showMenu(menu, e, this.contentEl, menuBtn);
     };
-    const addBtn = header.createEl("button", {
+    const headerActions = header.createDiv({ cls: "rv-header-actions" });
+    const backBtn = headerActions.createEl("button", {
+      cls: "rv-icon-btn rv-back-btn"
+    });
+    (0, import_obsidian2.setIcon)(backBtn, "arrow-left");
+    backBtn.setAttribute("aria-label", "Back to last project");
+    backBtn.disabled = !this.plugin.canGoBack();
+    backBtn.onclick = () => void this.plugin.goBack();
+    const addBtn = headerActions.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
