@@ -1248,6 +1248,28 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  paneHasOpenTabs(project: Project, paneId: string | null): boolean {
+    return this.paneNotes(project, paneId).length > 0;
+  }
+
+  /** Close every tab in a pane, leaving it on an empty new tab. */
+  async closeAllInPane(project: Project, paneId: string | null): Promise<void> {
+    this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
+    this.setPaneNotes(project, paneId, []);
+    this.isActivating = true;
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group)) toClose.push(leaf);
+      });
+      for (const leaf of toClose) leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    await this.showPane(project, paneId);
+  }
+
   async deleteProject(project: Project): Promise<void> {
     // Close every live pane belonging to this project.
     for (const [key, group] of [...this.projectGroups]) {
@@ -1916,6 +1938,13 @@ class ProjectContentView extends ItemView {
               (file) => void this.plugin.openNoteInPane(project, paneId, file)
             ).open()
           )
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Close all tabs")
+          .setIcon("x")
+          .setDisabled(!this.plugin.paneHasOpenTabs(project, paneId))
+          .onClick(() => void this.plugin.closeAllInPane(project, paneId))
       );
       menu.addSeparator();
       menu.addItem((i) =>

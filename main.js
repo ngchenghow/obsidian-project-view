@@ -1401,6 +1401,28 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         await this.openNoteStateInActivePane(note, file);
     }
   }
+  paneHasOpenTabs(project, paneId) {
+    return this.paneNotes(project, paneId).length > 0;
+  }
+  /** Close every tab in a pane, leaving it on an empty new tab. */
+  async closeAllInPane(project, paneId) {
+    this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
+    this.setPaneNotes(project, paneId, []);
+    this.isActivating = true;
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group))
+          toClose.push(leaf);
+      });
+      for (const leaf of toClose)
+        leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    await this.showPane(project, paneId);
+  }
   async deleteProject(project) {
     for (const [key, group] of [...this.projectGroups]) {
       if (key !== project.id && !key.startsWith(project.id + "::"))
@@ -1955,6 +1977,9 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
             (file) => void this.plugin.openNoteInPane(project, paneId, file)
           ).open()
         )
+      );
+      menu.addItem(
+        (i) => i.setTitle("Close all tabs").setIcon("x").setDisabled(!this.plugin.paneHasOpenTabs(project, paneId)).onClick(() => void this.plugin.closeAllInPane(project, paneId))
       );
       menu.addSeparator();
       menu.addItem(
