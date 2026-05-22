@@ -927,7 +927,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    * tidy away any other restored groups, and record the tabs.
    */
   restoreOnStartup() {
-    var _a, _b;
+    var _a, _b, _c;
     const active = this.getActiveProject();
     if (!active)
       return;
@@ -943,9 +943,15 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       }
     });
     const anchor = (_a = workspace.getMostRecentLeaf(workspace.rootSplit)) != null ? _a : firstLeaf;
+    console.log("[ProjectView] startup", {
+      activeProject: active.name,
+      restoredFile,
+      hasAnchor: !!anchor,
+      savedTabs: this.paneNotes(active, (_b = active.activePaneId) != null ? _b : null).length
+    });
     if (restoredFile && anchor) {
       const group = anchor.parent;
-      const key = this.paneKey(active.id, (_b = active.activePaneId) != null ? _b : null);
+      const key = this.paneKey(active.id, (_c = active.activePaneId) != null ? _c : null);
       this.projectGroups.set(key, group);
       this.refreshListView();
       void this.activateContentView();

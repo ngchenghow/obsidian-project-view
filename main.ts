@@ -720,6 +720,13 @@ export default class RecentViewPlugin extends Plugin {
     });
     const anchor = workspace.getMostRecentLeaf(workspace.rootSplit) ?? firstLeaf;
 
+    console.log("[ProjectView] startup", {
+      activeProject: active.name,
+      restoredFile,
+      hasAnchor: !!anchor,
+      savedTabs: this.paneNotes(active, active.activePaneId ?? null).length,
+    });
+
     if (restoredFile && anchor) {
       // Adopt the restored tab group as the active project's pane and keep its
       // tabs exactly as Obsidian restored them.
