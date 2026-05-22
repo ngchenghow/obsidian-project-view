@@ -1416,24 +1416,29 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     }
     return this.paneNotes(project, paneId).length > 0;
   }
-  /** Close every tab in a pane, leaving it on an empty new tab. */
+  /** Close every tab in a pane, leaving it on a single empty new tab. */
   async closeAllInPane(project, paneId) {
-    this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
-    this.setPaneNotes(project, paneId, []);
-    this.isActivating = true;
-    const key = this.paneKey(project.id, paneId);
-    const group = this.projectGroups.get(key);
-    if (group) {
-      const toClose = [];
-      this.app.workspace.iterateRootLeaves((leaf) => {
-        if (this.leafInGroup(leaf, group))
-          toClose.push(leaf);
-      });
-      for (const leaf of toClose)
-        leaf.detach();
-      this.projectGroups.delete(key);
-    }
     await this.showPane(project, paneId);
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    if (!group)
+      return;
+    this.isActivating = true;
+    const leaves = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      if (this.leafInGroup(leaf, group))
+        leaves.push(leaf);
+    });
+    this.recordClosedNotes(project, paneId, this.paneNotes(project, paneId));
+    const keep = leaves[0];
+    for (let i = 1; i < leaves.length; i++)
+      leaves[i].detach();
+    if (keep)
+      await keep.setViewState({ type: "empty" });
+    this.setPaneNotes(project, paneId, []);
+    this.refreshOpenHighlights();
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
   }
   async deleteProject(project) {
     for (const [key, group] of [...this.projectGroups]) {
