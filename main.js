@@ -1201,6 +1201,72 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     void this.persist();
     return open.length;
   }
+  /** Snapshot the open tabs belonging to a pane's tab group. */
+  captureGroupTabs(group) {
+    var _a;
+    const activeLeaf = this.app.workspace.getMostRecentLeaf(
+      this.app.workspace.rootSplit
+    );
+    const activePath = (_a = activeLeaf == null ? void 0 : activeLeaf.getViewState().state) == null ? void 0 : _a.file;
+    const open = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      var _a2;
+      if (!this.leafInGroup(leaf, group))
+        return;
+      const filePath = (_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file;
+      if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
+        open.push({
+          path: filePath,
+          eState: leaf.getEphemeralState(),
+          active: filePath === activePath
+        });
+      }
+    });
+    return open;
+  }
+  /** Save the active pane's current tabs as the project's default tab set. */
+  saveDefaultTabs(project) {
+    var _a;
+    const paneId = (_a = project.activePaneId) != null ? _a : null;
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    if (!group) {
+      new import_obsidian2.Notice("No open pane to save.");
+      return;
+    }
+    project.defaultTabs = this.captureGroupTabs(group);
+    void this.persistNow();
+    this.refreshContentView();
+    new import_obsidian2.Notice(`Saved ${project.defaultTabs.length} default tab(s).`);
+  }
+  /** Reopen the project's saved default tabs in the active pane. */
+  async openDefaultTabs(project) {
+    var _a, _b;
+    const defaults = (_a = project.defaultTabs) != null ? _a : [];
+    if (defaults.length === 0) {
+      new import_obsidian2.Notice("No default tabs saved for this project.");
+      return;
+    }
+    const paneId = (_b = project.activePaneId) != null ? _b : null;
+    this.setPaneNotes(
+      project,
+      paneId,
+      defaults.map((n) => ({ ...n }))
+    );
+    this.isActivating = true;
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group))
+          toClose.push(leaf);
+      });
+      for (const leaf of toClose)
+        leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    await this.showPane(project, paneId);
+  }
   async deleteProject(project) {
     for (const [key, group] of [...this.projectGroups]) {
       if (key !== project.id && !key.startsWith(project.id + "::"))
@@ -1602,6 +1668,20 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
+    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
+    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Panes options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new import_obsidian2.Menu();
+      menu.addItem(
+        (i) => i.setTitle("Save current tabs as default").setIcon("save").onClick(() => this.plugin.saveDefaultTabs(project))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Open default tabs").setIcon("layout-list").onClick(() => void this.plugin.openDefaultTabs(project))
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
     const list = section.createDiv({ cls: "rv-file-list" });
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
     for (const pane of project.panes) {

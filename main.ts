@@ -60,6 +60,8 @@ interface Project {
   // Google Drive sync: source/target folder id and the mirrored vault folder.
   driveFolderId?: string;
   driveLocalFolder?: string;
+  // A manually saved set of tabs that can be reopened on demand.
+  defaultTabs?: OpenNote[];
 }
 
 interface RecentViewData {
@@ -1023,6 +1025,69 @@ export default class RecentViewPlugin extends Plugin {
     return open.length;
   }
 
+  /** Snapshot the open tabs belonging to a pane's tab group. */
+  private captureGroupTabs(group: WorkspaceParent): OpenNote[] {
+    const activeLeaf = this.app.workspace.getMostRecentLeaf(
+      this.app.workspace.rootSplit
+    );
+    const activePath = activeLeaf?.getViewState().state?.file;
+    const open: OpenNote[] = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      if (!this.leafInGroup(leaf, group)) return;
+      const filePath = leaf.getViewState().state?.file;
+      if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
+        open.push({
+          path: filePath,
+          eState: leaf.getEphemeralState(),
+          active: filePath === activePath,
+        });
+      }
+    });
+    return open;
+  }
+
+  /** Save the active pane's current tabs as the project's default tab set. */
+  saveDefaultTabs(project: Project): void {
+    const paneId = project.activePaneId ?? null;
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    if (!group) {
+      new Notice("No open pane to save.");
+      return;
+    }
+    project.defaultTabs = this.captureGroupTabs(group);
+    void this.persistNow();
+    this.refreshContentView();
+    new Notice(`Saved ${project.defaultTabs.length} default tab(s).`);
+  }
+
+  /** Reopen the project's saved default tabs in the active pane. */
+  async openDefaultTabs(project: Project): Promise<void> {
+    const defaults = project.defaultTabs ?? [];
+    if (defaults.length === 0) {
+      new Notice("No default tabs saved for this project.");
+      return;
+    }
+    const paneId = project.activePaneId ?? null;
+    this.setPaneNotes(
+      project,
+      paneId,
+      defaults.map((n) => ({ ...n }))
+    );
+    // Drop the live pane group so it is rebuilt from the default tabs.
+    this.isActivating = true;
+    const key = this.paneKey(project.id, paneId);
+    const group = this.projectGroups.get(key);
+    if (group) {
+      const toClose: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (this.leafInGroup(leaf, group)) toClose.push(leaf);
+      });
+      for (const leaf of toClose) leaf.detach();
+      this.projectGroups.delete(key);
+    }
+    await this.showPane(project, paneId);
+  }
+
   async deleteProject(project: Project): Promise<void> {
     // Close every live pane belonging to this project.
     for (const [key, group] of [...this.projectGroups]) {
@@ -1507,6 +1572,26 @@ class ProjectContentView extends ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     setIcon(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
+    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Panes options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Save current tabs as default")
+          .setIcon("save")
+          .onClick(() => this.plugin.saveDefaultTabs(project))
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Open default tabs")
+          .setIcon("layout-list")
+          .onClick(() => void this.plugin.openDefaultTabs(project))
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
     const list = section.createDiv({ cls: "rv-file-list" });
 
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
