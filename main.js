@@ -503,6 +503,9 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     this.projectGroups = /* @__PURE__ */ new Map();
     // Stack of previously-active project ids, for the back button.
     this.navHistory = [];
+    // True while the app is quitting / plugin unloading (avoid wiping saved tabs
+    // when the workspace tears down its leaves).
+    this.unloading = false;
     this._drive = null;
   }
   get drive() {
@@ -562,6 +565,15 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       )
     );
     this.registerEvent(
+      this.app.workspace.on("quit", (tasks) => {
+        this.unloading = true;
+        this.saveActiveProjectTabs(true);
+        tasks.add(async () => {
+          await this.persistNow();
+        });
+      })
+    );
+    this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         const project = this.getActiveProject();
         if (!project)
@@ -596,7 +608,8 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     });
   }
   onunload() {
-    this.saveActiveProjectTabs(true);
+    if (!this.unloading)
+      this.saveActiveProjectTabs(true);
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
@@ -1337,7 +1350,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    */
   onLayoutChange() {
     var _a;
-    if (this.isActivating)
+    if (this.isActivating || this.unloading)
       return;
     const project = this.getActiveProject();
     if (!project)
@@ -1361,7 +1374,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
   }
   saveActiveProjectTabs(force = false) {
     var _a, _b;
-    if (this.isActivating && !force)
+    if ((this.isActivating || this.unloading) && !force)
       return -1;
     const project = this.getActiveProject();
     if (!project)

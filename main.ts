@@ -233,6 +233,9 @@ export default class RecentViewPlugin extends Plugin {
   private projectGroups: Map<string, WorkspaceParent> = new Map();
   // Stack of previously-active project ids, for the back button.
   private navHistory: string[] = [];
+  // True while the app is quitting / plugin unloading (avoid wiping saved tabs
+  // when the workspace tears down its leaves).
+  private unloading = false;
   private _drive: GoogleDriveClient | null = null;
 
   get drive(): GoogleDriveClient {
@@ -302,6 +305,18 @@ export default class RecentViewPlugin extends Plugin {
       )
     );
 
+    // Save the open tabs before the app quits (and stop teardown from wiping
+    // them). Tasks.add lets Obsidian await the final data-note write.
+    this.registerEvent(
+      this.app.workspace.on("quit", (tasks) => {
+        this.unloading = true;
+        this.saveActiveProjectTabs(true);
+        tasks.add(async () => {
+          await this.persistNow();
+        });
+      })
+    );
+
     // Add "Add to current project" to the native file/folder context menu.
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -350,8 +365,10 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   onunload(): void {
-    // Capture the current tabs, then flush the data note so nothing is lost.
-    this.saveActiveProjectTabs(true);
+    // On plugin disable, capture current tabs. On app quit the "quit" handler
+    // already saved them (and the workspace may be torn down by now), so skip
+    // re-capturing to avoid wiping the saved tabs with an empty set.
+    if (!this.unloading) this.saveActiveProjectTabs(true);
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
@@ -1186,7 +1203,7 @@ export default class RecentViewPlugin extends Plugin {
    * new tab so the project always has a visible pane.
    */
   private onLayoutChange(): void {
-    if (this.isActivating) return;
+    if (this.isActivating || this.unloading) return;
     const project = this.getActiveProject();
     if (!project) return;
     const paneId = project.activePaneId ?? null;
@@ -1209,7 +1226,7 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   saveActiveProjectTabs(force = false): number {
-    if (this.isActivating && !force) return -1;
+    if ((this.isActivating || this.unloading) && !force) return -1;
     const project = this.getActiveProject();
     if (!project) return -1;
     const paneId = project.activePaneId ?? null;
