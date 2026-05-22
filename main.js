@@ -392,52 +392,67 @@ function genId() {
 function sanitizeVaultName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
 }
-function makeReorderable(item, id, onMove) {
-  item.draggable = true;
-  item.addClass("rv-pin-draggable");
-  item.addEventListener("dragstart", (e) => {
-    var _a;
-    (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", id);
-    if (e.dataTransfer)
-      e.dataTransfer.effectAllowed = "move";
-    item.addClass("rv-dragging");
-  });
-  item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
-  item.addEventListener("dragover", (e) => {
+function enableReorder(container, onReorder) {
+  const items = () => Array.from(container.children).filter(
+    (el) => el.dataset.rvId != null
+  );
+  let dragging = null;
+  for (const item of items()) {
+    item.draggable = true;
+    item.addClass("rv-pin-draggable");
+    item.addEventListener("dragstart", (e) => {
+      var _a;
+      dragging = item;
+      item.addClass("rv-dragging");
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", (_a = item.dataset.rvId) != null ? _a : "");
+      }
+    });
+    item.addEventListener("dragend", () => {
+      item.removeClass("rv-dragging");
+      dragging = null;
+      onReorder(items().map((i) => {
+        var _a;
+        return (_a = i.dataset.rvId) != null ? _a : "";
+      }));
+    });
+  }
+  container.addEventListener("dragover", (e) => {
     e.preventDefault();
+    if (!dragging)
+      return;
     if (e.dataTransfer)
       e.dataTransfer.dropEffect = "move";
-    const rect = item.getBoundingClientRect();
-    const after = e.clientY > rect.top + rect.height / 2;
-    item.toggleClass("rv-drop-after", after);
-    item.toggleClass("rv-drop-before", !after);
-  });
-  item.addEventListener("dragleave", () => {
-    item.removeClass("rv-drop-before");
-    item.removeClass("rv-drop-after");
-  });
-  item.addEventListener("drop", (e) => {
-    var _a;
-    e.preventDefault();
-    const after = item.hasClass("rv-drop-after");
-    item.removeClass("rv-drop-before");
-    item.removeClass("rv-drop-after");
-    const fromId = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-    if (fromId && fromId !== id)
-      onMove(fromId, id, after);
+    const y = e.clientY;
+    const siblings = items().filter((i) => i !== dragging);
+    let before = null;
+    for (const sib of siblings) {
+      const box = sib.getBoundingClientRect();
+      if (y < box.top + box.height / 2) {
+        before = sib;
+        break;
+      }
+    }
+    if (before)
+      container.insertBefore(dragging, before);
+    else
+      container.appendChild(dragging);
   });
 }
-function reorderById(list, idOf, fromId, toId, after) {
-  const from = list.findIndex((x) => idOf(x) === fromId);
-  if (from < 0)
-    return list;
-  const moved = list[from];
-  const without = list.filter((_, i) => i !== from);
-  const target = without.findIndex((x) => idOf(x) === toId);
-  if (target < 0)
-    return [...without, moved];
-  without.splice(after ? target + 1 : target, 0, moved);
-  return without;
+function applyOrder(list, idOf, orderedIds) {
+  const byId = new Map(list.map((item) => [idOf(item), item]));
+  const result = [];
+  for (const id of orderedIds) {
+    const item = byId.get(id);
+    if (item) {
+      result.push(item);
+      byId.delete(id);
+    }
+  }
+  for (const item of byId.values())
+    result.push(item);
+  return result;
 }
 function buildDataNote(data) {
   return `${DATA_NOTE_HEADER}
@@ -753,27 +768,15 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.persistNow();
     this.refreshContentView();
   }
-  /** Reorder projects in the left pane. */
-  async moveProject(fromId, toId, after) {
-    this.data.projects = reorderById(
-      this.data.projects,
-      (p) => p.id,
-      fromId,
-      toId,
-      after
-    );
+  /** Set the order of projects in the left pane. */
+  async setProjectOrder(orderedIds) {
+    this.data.projects = applyOrder(this.data.projects, (p) => p.id, orderedIds);
     await this.persistNow();
     this.refreshListView();
   }
-  /** Reorder a project's named panes. */
-  async movePane(project, fromId, toId, after) {
-    project.panes = reorderById(
-      project.panes,
-      (p) => p.id,
-      fromId,
-      toId,
-      after
-    );
+  /** Set the order of a project's named panes. */
+  async setPaneOrder(project, orderedIds) {
+    project.panes = applyOrder(project.panes, (p) => p.id, orderedIds);
     await this.persistNow();
     this.refreshContentView();
   }
@@ -1540,13 +1543,8 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       if (project.id === this.plugin.data.activeProjectId) {
         box.addClass("is-active");
       }
-      if (this.reordering) {
-        makeReorderable(
-          box,
-          project.id,
-          (fromId, toId, after) => void this.plugin.moveProject(fromId, toId, after)
-        );
-      }
+      if (this.reordering)
+        box.dataset.rvId = project.id;
       const info = box.createDiv({ cls: "rv-project-info" });
       info.createDiv({ cls: "rv-project-name", text: project.name });
       if (project.description) {
@@ -1604,6 +1602,9 @@ var ProjectListView = class extends import_obsidian2.ItemView {
           return;
         void this.plugin.openProject(project);
       };
+    }
+    if (this.reordering) {
+      enableReorder(list, (ids) => void this.plugin.setProjectOrder(ids));
     }
   }
 };
@@ -1801,13 +1802,11 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
         pane.name,
         activePaneId === pane.id
       );
-      if (this.panesReordering) {
-        makeReorderable(
-          item,
-          pane.id,
-          (fromId, toId, after) => void this.plugin.movePane(project, fromId, toId, after)
-        );
-      }
+      if (this.panesReordering)
+        item.dataset.rvId = pane.id;
+    }
+    if (this.panesReordering) {
+      enableReorder(list, (ids) => void this.plugin.setPaneOrder(project, ids));
     }
   }
   renderPaneItem(list, project, paneId, name, isActive) {
