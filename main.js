@@ -392,6 +392,53 @@ function genId() {
 function sanitizeVaultName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
 }
+function makeReorderable(item, id, onMove) {
+  item.draggable = true;
+  item.addClass("rv-pin-draggable");
+  item.addEventListener("dragstart", (e) => {
+    var _a;
+    (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", id);
+    if (e.dataTransfer)
+      e.dataTransfer.effectAllowed = "move";
+    item.addClass("rv-dragging");
+  });
+  item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
+  item.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer)
+      e.dataTransfer.dropEffect = "move";
+    const rect = item.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    item.toggleClass("rv-drop-after", after);
+    item.toggleClass("rv-drop-before", !after);
+  });
+  item.addEventListener("dragleave", () => {
+    item.removeClass("rv-drop-before");
+    item.removeClass("rv-drop-after");
+  });
+  item.addEventListener("drop", (e) => {
+    var _a;
+    e.preventDefault();
+    const after = item.hasClass("rv-drop-after");
+    item.removeClass("rv-drop-before");
+    item.removeClass("rv-drop-after");
+    const fromId = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
+    if (fromId && fromId !== id)
+      onMove(fromId, id, after);
+  });
+}
+function reorderById(list, idOf, fromId, toId, after) {
+  const from = list.findIndex((x) => idOf(x) === fromId);
+  if (from < 0)
+    return list;
+  const moved = list[from];
+  const without = list.filter((_, i) => i !== from);
+  const target = without.findIndex((x) => idOf(x) === toId);
+  if (target < 0)
+    return [...without, moved];
+  without.splice(after ? target + 1 : target, 0, moved);
+  return without;
+}
 function buildDataNote(data) {
   return `${DATA_NOTE_HEADER}
 
@@ -703,6 +750,30 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       pinned.push(fromPath);
     else
       pinned.splice(after ? target + 1 : target, 0, fromPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
+  /** Reorder projects in the left pane. */
+  async moveProject(fromId, toId, after) {
+    this.data.projects = reorderById(
+      this.data.projects,
+      (p) => p.id,
+      fromId,
+      toId,
+      after
+    );
+    await this.persistNow();
+    this.refreshListView();
+  }
+  /** Reorder a project's named panes. */
+  async movePane(project, fromId, toId, after) {
+    project.panes = reorderById(
+      project.panes,
+      (p) => p.id,
+      fromId,
+      toId,
+      after
+    );
     await this.persistNow();
     this.refreshContentView();
   }
@@ -1410,6 +1481,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
 var ProjectListView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.reordering = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -1430,13 +1502,30 @@ var ProjectListView = class extends import_obsidian2.ItemView {
     c.addClass("recent-view-list");
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
+    if (this.plugin.data.projects.length > 1) {
+      const reorderBtn = header.createEl("button", { cls: "rv-icon-btn" });
+      if (this.reordering)
+        reorderBtn.addClass("is-active");
+      (0, import_obsidian2.setIcon)(reorderBtn, this.reordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.reordering ? "Done reordering" : "Reorder projects"
+      );
+      reorderBtn.onclick = () => {
+        this.reordering = !this.reordering;
+        this.render();
+      };
+    }
     const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New"
     });
     addBtn.onclick = () => new ProjectEditModal(this.plugin.app, this.plugin, null).open();
     const list = c.createDiv({ cls: "rv-project-list" });
+    if (this.reordering)
+      list.addClass("rv-reordering");
     if (this.plugin.data.projects.length === 0) {
+      this.reordering = false;
       list.createDiv({
         cls: "rv-empty",
         text: 'No projects yet. Click "+ New" to create one.'
@@ -1447,6 +1536,13 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       const box = list.createDiv({ cls: "rv-project-box" });
       if (project.id === this.plugin.data.activeProjectId) {
         box.addClass("is-active");
+      }
+      if (this.reordering) {
+        makeReorderable(
+          box,
+          project.id,
+          (fromId, toId, after) => void this.plugin.moveProject(fromId, toId, after)
+        );
       }
       const info = box.createDiv({ cls: "rv-project-info" });
       info.createDiv({ cls: "rv-project-name", text: project.name });
@@ -1500,7 +1596,11 @@ var ProjectListView = class extends import_obsidian2.ItemView {
         );
         showMenu(menu, e, this.contentEl, menuBtn);
       };
-      box.onclick = () => void this.plugin.openProject(project);
+      box.onclick = () => {
+        if (this.reordering)
+          return;
+        void this.plugin.openProject(project);
+      };
     }
   }
 };
@@ -1508,6 +1608,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.reordering = false;
+    this.panesReordering = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -1660,23 +1761,51 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
   /** List the project's panes (main + named) when it has named panes. */
   renderPanes(c, project) {
     var _a;
-    if (!project.panes || project.panes.length === 0)
+    if (!project.panes || project.panes.length === 0) {
+      this.panesReordering = false;
       return;
+    }
     const activePaneId = (_a = project.activePaneId) != null ? _a : null;
     const section = c.createDiv({ cls: "rv-folder-section rv-panes-section" });
+    if (this.panesReordering)
+      section.addClass("rv-reordering");
     const head = section.createDiv({ cls: "rv-folder-head" });
     (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
+    if (project.panes.length > 1) {
+      const reorderBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu"
+      });
+      if (this.panesReordering)
+        reorderBtn.addClass("is-active");
+      (0, import_obsidian2.setIcon)(reorderBtn, this.panesReordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.panesReordering ? "Done reordering" : "Reorder panes"
+      );
+      reorderBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.panesReordering = !this.panesReordering;
+        this.render();
+      };
+    }
     const list = section.createDiv({ cls: "rv-file-list" });
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
     for (const pane of project.panes) {
-      this.renderPaneItem(
+      const item = this.renderPaneItem(
         list,
         project,
         pane.id,
         pane.name,
         activePaneId === pane.id
       );
+      if (this.panesReordering) {
+        makeReorderable(
+          item,
+          pane.id,
+          (fromId, toId, after) => void this.plugin.movePane(project, fromId, toId, after)
+        );
+      }
     }
   }
   renderPaneItem(list, project, paneId, name, isActive) {
@@ -1688,7 +1817,11 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       paneId ? "gallery-vertical" : "home"
     );
     item.createSpan({ cls: "rv-file-name", text: name });
-    item.onclick = () => void this.plugin.showPane(project, paneId);
+    item.onclick = () => {
+      if (this.panesReordering)
+        return;
+      void this.plugin.showPane(project, paneId);
+    };
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
     (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "Pane options");
@@ -1760,6 +1893,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       }
       showMenu(menu, e, this.contentEl, menuBtn);
     };
+    return item;
   }
   renderFileItem(container, file) {
     const item = container.createDiv({ cls: "rv-file-item" });

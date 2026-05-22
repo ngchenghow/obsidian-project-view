@@ -105,6 +105,60 @@ function sanitizeVaultName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
 }
 
+/** Make an element drag-reorderable; calls onMove(fromId, toId, after) on drop. */
+function makeReorderable(
+  item: HTMLElement,
+  id: string,
+  onMove: (fromId: string, toId: string, after: boolean) => void
+): void {
+  item.draggable = true;
+  item.addClass("rv-pin-draggable");
+  item.addEventListener("dragstart", (e) => {
+    e.dataTransfer?.setData("text/plain", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    item.addClass("rv-dragging");
+  });
+  item.addEventListener("dragend", () => item.removeClass("rv-dragging"));
+  item.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const rect = item.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    item.toggleClass("rv-drop-after", after);
+    item.toggleClass("rv-drop-before", !after);
+  });
+  item.addEventListener("dragleave", () => {
+    item.removeClass("rv-drop-before");
+    item.removeClass("rv-drop-after");
+  });
+  item.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const after = item.hasClass("rv-drop-after");
+    item.removeClass("rv-drop-before");
+    item.removeClass("rv-drop-after");
+    const fromId = e.dataTransfer?.getData("text/plain");
+    if (fromId && fromId !== id) onMove(fromId, id, after);
+  });
+}
+
+/** Reorder an array so item with fromId lands next to toId (after or before). */
+function reorderById<T>(
+  list: T[],
+  idOf: (item: T) => string,
+  fromId: string,
+  toId: string,
+  after: boolean
+): T[] {
+  const from = list.findIndex((x) => idOf(x) === fromId);
+  if (from < 0) return list;
+  const moved = list[from];
+  const without = list.filter((_, i) => i !== from);
+  const target = without.findIndex((x) => idOf(x) === toId);
+  if (target < 0) return [...without, moved];
+  without.splice(after ? target + 1 : target, 0, moved);
+  return without;
+}
+
 function buildDataNote(data: RecentViewData): string {
   return `${DATA_NOTE_HEADER}\n\n\`\`\`json\n${JSON.stringify(
     data,
@@ -457,6 +511,41 @@ export default class RecentViewPlugin extends Plugin {
     const target = pinned.indexOf(toPath);
     if (target < 0) pinned.push(fromPath);
     else pinned.splice(after ? target + 1 : target, 0, fromPath);
+    await this.persistNow();
+    this.refreshContentView();
+  }
+
+  /** Reorder projects in the left pane. */
+  async moveProject(
+    fromId: string,
+    toId: string,
+    after: boolean
+  ): Promise<void> {
+    this.data.projects = reorderById(
+      this.data.projects,
+      (p) => p.id,
+      fromId,
+      toId,
+      after
+    );
+    await this.persistNow();
+    this.refreshListView();
+  }
+
+  /** Reorder a project's named panes. */
+  async movePane(
+    project: Project,
+    fromId: string,
+    toId: string,
+    after: boolean
+  ): Promise<void> {
+    project.panes = reorderById(
+      project.panes,
+      (p) => p.id,
+      fromId,
+      toId,
+      after
+    );
     await this.persistNow();
     this.refreshContentView();
   }
@@ -1252,6 +1341,7 @@ export default class RecentViewPlugin extends Plugin {
 
 class ProjectListView extends ItemView {
   plugin: RecentViewPlugin;
+  private reordering = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: RecentViewPlugin) {
     super(leaf);
@@ -1281,6 +1371,19 @@ class ProjectListView extends ItemView {
 
     const header = c.createDiv({ cls: "rv-header" });
     header.createEl("span", { cls: "rv-header-title", text: "Projects" });
+    if (this.plugin.data.projects.length > 1) {
+      const reorderBtn = header.createEl("button", { cls: "rv-icon-btn" });
+      if (this.reordering) reorderBtn.addClass("is-active");
+      setIcon(reorderBtn, this.reordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.reordering ? "Done reordering" : "Reorder projects"
+      );
+      reorderBtn.onclick = () => {
+        this.reordering = !this.reordering;
+        this.render();
+      };
+    }
     const addBtn = header.createEl("button", {
       cls: "rv-new-btn",
       text: "+ New",
@@ -1289,8 +1392,10 @@ class ProjectListView extends ItemView {
       new ProjectEditModal(this.plugin.app, this.plugin, null).open();
 
     const list = c.createDiv({ cls: "rv-project-list" });
+    if (this.reordering) list.addClass("rv-reordering");
 
     if (this.plugin.data.projects.length === 0) {
+      this.reordering = false;
       list.createDiv({
         cls: "rv-empty",
         text: 'No projects yet. Click "+ New" to create one.',
@@ -1302,6 +1407,11 @@ class ProjectListView extends ItemView {
       const box = list.createDiv({ cls: "rv-project-box" });
       if (project.id === this.plugin.data.activeProjectId) {
         box.addClass("is-active");
+      }
+      if (this.reordering) {
+        makeReorderable(box, project.id, (fromId, toId, after) =>
+          void this.plugin.moveProject(fromId, toId, after)
+        );
       }
 
       const info = box.createDiv({ cls: "rv-project-info" });
@@ -1374,7 +1484,10 @@ class ProjectListView extends ItemView {
         showMenu(menu, e, this.contentEl, menuBtn);
       };
 
-      box.onclick = () => void this.plugin.openProject(project);
+      box.onclick = () => {
+        if (this.reordering) return;
+        void this.plugin.openProject(project);
+      };
     }
   }
 }
@@ -1382,6 +1495,7 @@ class ProjectListView extends ItemView {
 class ProjectContentView extends ItemView {
   plugin: RecentViewPlugin;
   private reordering = false;
+  private panesReordering = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: RecentViewPlugin) {
     super(leaf);
@@ -1576,23 +1690,49 @@ class ProjectContentView extends ItemView {
 
   /** List the project's panes (main + named) when it has named panes. */
   private renderPanes(c: HTMLElement, project: Project): void {
-    if (!project.panes || project.panes.length === 0) return;
+    if (!project.panes || project.panes.length === 0) {
+      this.panesReordering = false;
+      return;
+    }
     const activePaneId = project.activePaneId ?? null;
     const section = c.createDiv({ cls: "rv-folder-section rv-panes-section" });
+    if (this.panesReordering) section.addClass("rv-reordering");
     const head = section.createDiv({ cls: "rv-folder-head" });
     setIcon(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
+    // Reorder toggle (only the named panes can be reordered).
+    if (project.panes.length > 1) {
+      const reorderBtn = head.createEl("button", {
+        cls: "rv-icon-btn rv-head-menu",
+      });
+      if (this.panesReordering) reorderBtn.addClass("is-active");
+      setIcon(reorderBtn, this.panesReordering ? "check" : "arrow-up-down");
+      reorderBtn.setAttribute(
+        "aria-label",
+        this.panesReordering ? "Done reordering" : "Reorder panes"
+      );
+      reorderBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.panesReordering = !this.panesReordering;
+        this.render();
+      };
+    }
     const list = section.createDiv({ cls: "rv-file-list" });
 
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
     for (const pane of project.panes) {
-      this.renderPaneItem(
+      const item = this.renderPaneItem(
         list,
         project,
         pane.id,
         pane.name,
         activePaneId === pane.id
       );
+      if (this.panesReordering) {
+        makeReorderable(item, pane.id, (fromId, toId, after) =>
+          void this.plugin.movePane(project, fromId, toId, after)
+        );
+      }
     }
   }
 
@@ -1602,7 +1742,7 @@ class ProjectContentView extends ItemView {
     paneId: string | null,
     name: string,
     isActive: boolean
-  ): void {
+  ): HTMLElement {
     const item = list.createDiv({ cls: "rv-file-item rv-pane-item" });
     if (isActive) item.addClass("is-active");
     setIcon(
@@ -1610,7 +1750,10 @@ class ProjectContentView extends ItemView {
       paneId ? "gallery-vertical" : "home"
     );
     item.createSpan({ cls: "rv-file-name", text: name });
-    item.onclick = () => void this.plugin.showPane(project, paneId);
+    item.onclick = () => {
+      if (this.panesReordering) return;
+      void this.plugin.showPane(project, paneId);
+    };
 
     const menuBtn = item.createEl("button", { cls: "rv-icon-btn rv-item-menu" });
     setIcon(menuBtn, "more-vertical");
@@ -1710,6 +1853,7 @@ class ProjectContentView extends ItemView {
       }
       showMenu(menu, e, this.contentEl, menuBtn);
     };
+    return item;
   }
 
   private renderFileItem(container: HTMLElement, file: TFile): HTMLElement {
