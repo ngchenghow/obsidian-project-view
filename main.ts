@@ -2049,6 +2049,32 @@ class ProjectContentView extends ItemView {
   private showFileMenu(e: MouseEvent, file: TFile, btn: HTMLElement): void {
     const project = this.plugin.getActiveProject();
     const menu = new Menu();
+
+    // Close (only if the note is open as a tab in the current pane).
+    const group = this.plugin.getActiveGroup();
+    let openLeaf: WorkspaceLeaf | null = null;
+    if (group) {
+      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+        if (
+          !openLeaf &&
+          this.plugin.leafInGroup(leaf, group) &&
+          leaf.getViewState().state?.file === file.path
+        ) {
+          openLeaf = leaf;
+        }
+      });
+    }
+    if (openLeaf) {
+      const leaf = openLeaf as WorkspaceLeaf;
+      menu.addItem((i) =>
+        i
+          .setTitle("Close")
+          .setIcon("x")
+          .onClick(() => leaf.detach())
+      );
+      menu.addSeparator();
+    }
+
     if (project) {
       const pinned = (project.pinned ?? []).includes(file.path);
       menu.addItem((i) =>

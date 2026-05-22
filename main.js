@@ -2059,6 +2059,23 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     var _a;
     const project = this.plugin.getActiveProject();
     const menu = new import_obsidian2.Menu();
+    const group = this.plugin.getActiveGroup();
+    let openLeaf = null;
+    if (group) {
+      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+        var _a2;
+        if (!openLeaf && this.plugin.leafInGroup(leaf, group) && ((_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file) === file.path) {
+          openLeaf = leaf;
+        }
+      });
+    }
+    if (openLeaf) {
+      const leaf = openLeaf;
+      menu.addItem(
+        (i) => i.setTitle("Close").setIcon("x").onClick(() => leaf.detach())
+      );
+      menu.addSeparator();
+    }
     if (project) {
       const pinned = ((_a = project.pinned) != null ? _a : []).includes(file.path);
       menu.addItem(
