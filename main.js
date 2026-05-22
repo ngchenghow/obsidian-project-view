@@ -1826,12 +1826,30 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     }
     this.updateOpenHighlights();
   }
-  /** Grey-highlight the note item for the currently active note. */
+  /**
+   * Grey-highlight the active note, and give a solid file icon to notes that
+   * are open as tabs in the current pane.
+   */
   updateOpenHighlights() {
     var _a;
     const activePath = (_a = this.plugin.app.workspace.getActiveFile()) == null ? void 0 : _a.path;
+    const openPaths = /* @__PURE__ */ new Set();
+    const group = this.plugin.getActiveGroup();
+    if (group) {
+      this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+        var _a2;
+        if (!this.plugin.leafInGroup(leaf, group))
+          return;
+        const p = (_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file;
+        if (typeof p === "string")
+          openPaths.add(p);
+      });
+    }
     this.contentEl.querySelectorAll(".rv-file-item[data-rv-path]").forEach((el) => {
-      el.toggleClass("is-open", el.dataset.rvPath === activePath);
+      var _a2;
+      const path = (_a2 = el.dataset.rvPath) != null ? _a2 : "";
+      el.toggleClass("is-open", path === activePath);
+      el.toggleClass("is-tab-open", openPaths.has(path));
     });
   }
   /** List the project's panes (main + named) when it has named panes. */

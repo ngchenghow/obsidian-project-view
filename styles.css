@@ -231,6 +231,11 @@
   background: var(--background-modifier-hover);
 }
 
+/* Notes open as tabs in the current pane get a solid (filled) file icon. */
+.rv-file-item.is-tab-open .rv-file-icon svg {
+  fill: currentColor;
+}
+
 .rv-file-icon {
   display: inline-flex;
   align-items: center;
