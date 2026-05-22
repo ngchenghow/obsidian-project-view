@@ -1224,29 +1224,41 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     });
     return open;
   }
-  /** Save the active pane's current tabs as the project's default tab set. */
-  saveDefaultTabs(project) {
-    var _a;
-    const paneId = (_a = project.activePaneId) != null ? _a : null;
-    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
-    if (!group) {
-      new import_obsidian2.Notice("No open pane to save.");
+  /** A pane's saved default tab set (main pane uses project.defaultTabs). */
+  paneDefaultTabs(project, paneId) {
+    var _a, _b, _c;
+    if (!paneId)
+      return (_a = project.defaultTabs) != null ? _a : [];
+    return (_c = (_b = project.panes.find((p) => p.id === paneId)) == null ? void 0 : _b.defaultTabs) != null ? _c : [];
+  }
+  paneHasDefaultTabs(project, paneId) {
+    return this.paneDefaultTabs(project, paneId).length > 0;
+  }
+  setPaneDefaultTabs(project, paneId, tabs) {
+    if (!paneId) {
+      project.defaultTabs = tabs;
       return;
     }
-    project.defaultTabs = this.captureGroupTabs(group);
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane)
+      pane.defaultTabs = tabs;
+  }
+  /** Save a pane's tabs as its default tab set. */
+  saveDefaultTabs(project, paneId) {
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    const tabs = group ? this.captureGroupTabs(group) : this.paneNotes(project, paneId).map((n) => ({ ...n }));
+    this.setPaneDefaultTabs(project, paneId, tabs);
     void this.persistNow();
     this.refreshContentView();
-    new import_obsidian2.Notice(`Saved ${project.defaultTabs.length} default tab(s).`);
+    new import_obsidian2.Notice(`Saved ${tabs.length} default tab(s) for this pane.`);
   }
-  /** Reopen the project's saved default tabs in the active pane. */
-  async openDefaultTabs(project) {
-    var _a, _b;
-    const defaults = (_a = project.defaultTabs) != null ? _a : [];
+  /** Reopen a pane's saved default tabs (switching to that pane). */
+  async openDefaultTabs(project, paneId) {
+    const defaults = this.paneDefaultTabs(project, paneId);
     if (defaults.length === 0) {
-      new import_obsidian2.Notice("No default tabs saved for this project.");
+      new import_obsidian2.Notice("No default tabs saved for this pane.");
       return;
     }
-    const paneId = (_b = project.activePaneId) != null ? _b : null;
     this.setPaneNotes(
       project,
       paneId,
@@ -1668,20 +1680,6 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
-    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
-    (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
-    menuBtn.setAttribute("aria-label", "Panes options");
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
-      const menu = new import_obsidian2.Menu();
-      menu.addItem(
-        (i) => i.setTitle("Save current tabs as default").setIcon("save").onClick(() => this.plugin.saveDefaultTabs(project))
-      );
-      menu.addItem(
-        (i) => i.setTitle("Open default tabs").setIcon("layout-list").onClick(() => void this.plugin.openDefaultTabs(project))
-      );
-      showMenu(menu, e, this.contentEl, menuBtn);
-    };
     const list = section.createDiv({ cls: "rv-file-list" });
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
     for (const pane of project.panes) {
@@ -1743,6 +1741,13 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
             (file) => void this.plugin.openNoteInPane(project, paneId, file)
           ).open()
         )
+      );
+      menu.addSeparator();
+      menu.addItem(
+        (i) => i.setTitle("Save current tabs as default").setIcon("save").onClick(() => this.plugin.saveDefaultTabs(project, paneId))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Open default tabs").setIcon("layout-list").setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false).onClick(() => void this.plugin.openDefaultTabs(project, paneId))
       );
       if (paneId) {
         menu.addSeparator();

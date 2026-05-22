@@ -39,6 +39,8 @@ interface ProjectPane {
   name: string;
   lastOpenNotes: OpenNote[];
   lastClosedNotes?: OpenNote[];
+  // A manually saved set of tabs that can be reopened on demand.
+  defaultTabs?: OpenNote[];
 }
 
 interface Project {
@@ -1046,28 +1048,49 @@ export default class RecentViewPlugin extends Plugin {
     return open;
   }
 
-  /** Save the active pane's current tabs as the project's default tab set. */
-  saveDefaultTabs(project: Project): void {
-    const paneId = project.activePaneId ?? null;
-    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
-    if (!group) {
-      new Notice("No open pane to save.");
-      return;
-    }
-    project.defaultTabs = this.captureGroupTabs(group);
-    void this.persistNow();
-    this.refreshContentView();
-    new Notice(`Saved ${project.defaultTabs.length} default tab(s).`);
+  /** A pane's saved default tab set (main pane uses project.defaultTabs). */
+  private paneDefaultTabs(project: Project, paneId: string | null): OpenNote[] {
+    if (!paneId) return project.defaultTabs ?? [];
+    return project.panes.find((p) => p.id === paneId)?.defaultTabs ?? [];
   }
 
-  /** Reopen the project's saved default tabs in the active pane. */
-  async openDefaultTabs(project: Project): Promise<void> {
-    const defaults = project.defaultTabs ?? [];
-    if (defaults.length === 0) {
-      new Notice("No default tabs saved for this project.");
+  paneHasDefaultTabs(project: Project, paneId: string | null): boolean {
+    return this.paneDefaultTabs(project, paneId).length > 0;
+  }
+
+  private setPaneDefaultTabs(
+    project: Project,
+    paneId: string | null,
+    tabs: OpenNote[]
+  ): void {
+    if (!paneId) {
+      project.defaultTabs = tabs;
       return;
     }
-    const paneId = project.activePaneId ?? null;
+    const pane = project.panes.find((p) => p.id === paneId);
+    if (pane) pane.defaultTabs = tabs;
+  }
+
+  /** Save a pane's tabs as its default tab set. */
+  saveDefaultTabs(project: Project, paneId: string | null): void {
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    // Use the live tabs if the pane is currently shown, else its stored tabs.
+    const tabs = group
+      ? this.captureGroupTabs(group)
+      : this.paneNotes(project, paneId).map((n) => ({ ...n }));
+    this.setPaneDefaultTabs(project, paneId, tabs);
+    void this.persistNow();
+    this.refreshContentView();
+    new Notice(`Saved ${tabs.length} default tab(s) for this pane.`);
+  }
+
+  /** Reopen a pane's saved default tabs (switching to that pane). */
+  async openDefaultTabs(project: Project, paneId: string | null): Promise<void> {
+    const defaults = this.paneDefaultTabs(project, paneId);
+    if (defaults.length === 0) {
+      new Notice("No default tabs saved for this pane.");
+      return;
+    }
     this.setPaneNotes(
       project,
       paneId,
@@ -1572,26 +1595,6 @@ class ProjectContentView extends ItemView {
     const head = section.createDiv({ cls: "rv-folder-head" });
     setIcon(head.createSpan({ cls: "rv-folder-icon" }), "layout-grid");
     head.createSpan({ text: "Panes" });
-    const menuBtn = head.createEl("button", { cls: "rv-icon-btn rv-head-menu" });
-    setIcon(menuBtn, "more-vertical");
-    menuBtn.setAttribute("aria-label", "Panes options");
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
-      const menu = new Menu();
-      menu.addItem((i) =>
-        i
-          .setTitle("Save current tabs as default")
-          .setIcon("save")
-          .onClick(() => this.plugin.saveDefaultTabs(project))
-      );
-      menu.addItem((i) =>
-        i
-          .setTitle("Open default tabs")
-          .setIcon("layout-list")
-          .onClick(() => void this.plugin.openDefaultTabs(project))
-      );
-      showMenu(menu, e, this.contentEl, menuBtn);
-    };
     const list = section.createDiv({ cls: "rv-file-list" });
 
     this.renderPaneItem(list, project, null, "Main", activePaneId === null);
@@ -1677,6 +1680,20 @@ class ProjectContentView extends ItemView {
               (file) => void this.plugin.openNoteInPane(project, paneId, file)
             ).open()
           )
+      );
+      menu.addSeparator();
+      menu.addItem((i) =>
+        i
+          .setTitle("Save current tabs as default")
+          .setIcon("save")
+          .onClick(() => this.plugin.saveDefaultTabs(project, paneId))
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Open default tabs")
+          .setIcon("layout-list")
+          .setDisabled(this.plugin.paneHasDefaultTabs(project, paneId) === false)
+          .onClick(() => void this.plugin.openDefaultTabs(project, paneId))
       );
       // Rename/Delete only apply to named (non-main) panes.
       if (paneId) {
