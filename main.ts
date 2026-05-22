@@ -1249,6 +1249,20 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   paneHasOpenTabs(project: Project, paneId: string | null): boolean {
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    if (group) {
+      let has = false;
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (
+          !has &&
+          this.leafInGroup(leaf, group) &&
+          typeof leaf.getViewState().state?.file === "string"
+        ) {
+          has = true;
+        }
+      });
+      if (has) return true;
+    }
     return this.paneNotes(project, paneId).length > 0;
   }
 

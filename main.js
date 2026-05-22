@@ -1402,6 +1402,18 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     }
   }
   paneHasOpenTabs(project, paneId) {
+    const group = this.getLiveGroup(this.paneKey(project.id, paneId));
+    if (group) {
+      let has = false;
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        var _a;
+        if (!has && this.leafInGroup(leaf, group) && typeof ((_a = leaf.getViewState().state) == null ? void 0 : _a.file) === "string") {
+          has = true;
+        }
+      });
+      if (has)
+        return true;
+    }
     return this.paneNotes(project, paneId).length > 0;
   }
   /** Close every tab in a pane, leaving it on an empty new tab. */
