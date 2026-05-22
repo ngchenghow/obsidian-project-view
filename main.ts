@@ -350,12 +350,13 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   onunload(): void {
-    // Flush any debounced note write so nothing is lost on disable/close.
+    // Capture the current tabs, then flush the data note so nothing is lost.
+    this.saveActiveProjectTabs(true);
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
-      void this.writeDataNote();
     }
+    void this.writeDataNote();
   }
 
   /**
@@ -707,31 +708,31 @@ export default class RecentViewPlugin extends Plugin {
     const active = this.getActiveProject();
     if (!active) return;
     const { workspace } = this.app;
-    const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
-    if (!mru) {
-      void this.openProject(active);
-      return;
-    }
-    const group = mru.parent as unknown as WorkspaceParent;
-    const paneId = active.activePaneId ?? null;
-    const key = this.paneKey(active.id, paneId);
 
-    this.isActivating = true;
-    // Collapse any other restored root groups (their panes rebuild on demand).
-    const others: WorkspaceLeaf[] = [];
+    // Did Obsidian restore any open notes in the main area?
+    let restoredFile = false;
+    let firstLeaf: WorkspaceLeaf | null = null;
     workspace.iterateRootLeaves((leaf) => {
-      if (!this.leafInGroup(leaf, group)) others.push(leaf);
+      if (!firstLeaf) firstLeaf = leaf;
+      if (typeof leaf.getViewState().state?.file === "string") {
+        restoredFile = true;
+      }
     });
-    for (const leaf of others) leaf.detach();
+    const anchor = workspace.getMostRecentLeaf(workspace.rootSplit) ?? firstLeaf;
 
-    this.projectGroups.set(key, group);
-    this.applyGroupVisibility(key);
-    this.refreshListView();
-    void this.activateContentView();
-    this.saveActiveProjectTabs(true);
-    window.setTimeout(() => {
-      this.isActivating = false;
-    }, 150);
+    if (restoredFile && anchor) {
+      // Adopt the restored tab group as the active project's pane and keep its
+      // tabs exactly as Obsidian restored them.
+      const group = (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent;
+      const key = this.paneKey(active.id, active.activePaneId ?? null);
+      this.projectGroups.set(key, group);
+      this.refreshListView();
+      void this.activateContentView();
+      this.saveActiveProjectTabs(true);
+    } else {
+      // Nothing was restored: rebuild the active pane from saved tabs.
+      void this.openProject(active);
+    }
   }
 
   canGoBack(): boolean {

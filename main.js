@@ -596,11 +596,12 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     });
   }
   onunload() {
+    this.saveActiveProjectTabs(true);
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
-      void this.writeDataNote();
     }
+    void this.writeDataNote();
   }
   /**
    * Load settings (from the plugin's data.json) and project data (from the
@@ -926,35 +927,32 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    * tidy away any other restored groups, and record the tabs.
    */
   restoreOnStartup() {
-    var _a;
+    var _a, _b;
     const active = this.getActiveProject();
     if (!active)
       return;
     const { workspace } = this.app;
-    const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
-    if (!mru) {
-      void this.openProject(active);
-      return;
-    }
-    const group = mru.parent;
-    const paneId = (_a = active.activePaneId) != null ? _a : null;
-    const key = this.paneKey(active.id, paneId);
-    this.isActivating = true;
-    const others = [];
+    let restoredFile = false;
+    let firstLeaf = null;
     workspace.iterateRootLeaves((leaf) => {
-      if (!this.leafInGroup(leaf, group))
-        others.push(leaf);
+      var _a2;
+      if (!firstLeaf)
+        firstLeaf = leaf;
+      if (typeof ((_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file) === "string") {
+        restoredFile = true;
+      }
     });
-    for (const leaf of others)
-      leaf.detach();
-    this.projectGroups.set(key, group);
-    this.applyGroupVisibility(key);
-    this.refreshListView();
-    void this.activateContentView();
-    this.saveActiveProjectTabs(true);
-    window.setTimeout(() => {
-      this.isActivating = false;
-    }, 150);
+    const anchor = (_a = workspace.getMostRecentLeaf(workspace.rootSplit)) != null ? _a : firstLeaf;
+    if (restoredFile && anchor) {
+      const group = anchor.parent;
+      const key = this.paneKey(active.id, (_b = active.activePaneId) != null ? _b : null);
+      this.projectGroups.set(key, group);
+      this.refreshListView();
+      void this.activateContentView();
+      this.saveActiveProjectTabs(true);
+    } else {
+      void this.openProject(active);
+    }
   }
   canGoBack() {
     return this.navHistory.length > 0;
