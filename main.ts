@@ -330,10 +330,9 @@ export default class RecentViewPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.arrangeLeftSidebar();
 
-      // Rebuild only the active project's pane on startup (other projects'
-      // panes are recreated lazily the first time they are clicked).
-      const active = this.getActiveProject();
-      if (active) void this.openProject(active);
+      // Adopt Obsidian's restored tabs as the active project's pane so the
+      // open + active notes are preserved across restarts.
+      this.restoreOnStartup();
 
       // Keep the content pane in sync when notes are added/removed/renamed in
       // the vault (e.g. a new note created inside a project folder). Registered
@@ -697,6 +696,42 @@ export default class RecentViewPlugin extends Plugin {
       if (this.navHistory.length > 50) this.navHistory.shift();
     }
     await this.showPane(project, project.activePaneId ?? null);
+  }
+
+  /**
+   * On startup, adopt Obsidian's already-restored main-area tab group as the
+   * active project's pane (so open + active tabs persist across restarts),
+   * tidy away any other restored groups, and record the tabs.
+   */
+  private restoreOnStartup(): void {
+    const active = this.getActiveProject();
+    if (!active) return;
+    const { workspace } = this.app;
+    const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
+    if (!mru) {
+      void this.openProject(active);
+      return;
+    }
+    const group = mru.parent as unknown as WorkspaceParent;
+    const paneId = active.activePaneId ?? null;
+    const key = this.paneKey(active.id, paneId);
+
+    this.isActivating = true;
+    // Collapse any other restored root groups (their panes rebuild on demand).
+    const others: WorkspaceLeaf[] = [];
+    workspace.iterateRootLeaves((leaf) => {
+      if (!this.leafInGroup(leaf, group)) others.push(leaf);
+    });
+    for (const leaf of others) leaf.detach();
+
+    this.projectGroups.set(key, group);
+    this.applyGroupVisibility(key);
+    this.refreshListView();
+    void this.activateContentView();
+    this.saveActiveProjectTabs(true);
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
   }
 
   canGoBack(): boolean {

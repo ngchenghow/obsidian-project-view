@@ -583,9 +583,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     );
     this.app.workspace.onLayoutReady(() => {
       this.arrangeLeftSidebar();
-      const active = this.getActiveProject();
-      if (active)
-        void this.openProject(active);
+      this.restoreOnStartup();
       const onVaultChange = () => this.refreshContentView();
       this.registerEvent(this.app.vault.on("create", onVaultChange));
       this.registerEvent(this.app.vault.on("delete", onVaultChange));
@@ -921,6 +919,42 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         this.navHistory.shift();
     }
     await this.showPane(project, (_a = project.activePaneId) != null ? _a : null);
+  }
+  /**
+   * On startup, adopt Obsidian's already-restored main-area tab group as the
+   * active project's pane (so open + active tabs persist across restarts),
+   * tidy away any other restored groups, and record the tabs.
+   */
+  restoreOnStartup() {
+    var _a;
+    const active = this.getActiveProject();
+    if (!active)
+      return;
+    const { workspace } = this.app;
+    const mru = workspace.getMostRecentLeaf(workspace.rootSplit);
+    if (!mru) {
+      void this.openProject(active);
+      return;
+    }
+    const group = mru.parent;
+    const paneId = (_a = active.activePaneId) != null ? _a : null;
+    const key = this.paneKey(active.id, paneId);
+    this.isActivating = true;
+    const others = [];
+    workspace.iterateRootLeaves((leaf) => {
+      if (!this.leafInGroup(leaf, group))
+        others.push(leaf);
+    });
+    for (const leaf of others)
+      leaf.detach();
+    this.projectGroups.set(key, group);
+    this.applyGroupVisibility(key);
+    this.refreshListView();
+    void this.activateContentView();
+    this.saveActiveProjectTabs(true);
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
   }
   canGoBack() {
     return this.navHistory.length > 0;
