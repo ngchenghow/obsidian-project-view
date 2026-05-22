@@ -13,11 +13,25 @@
   font-size: var(--font-ui-medium);
 }
 
-.rv-header-actions {
+.rv-header-title-wrap {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+
+.rv-header-menu {
   flex-shrink: 0;
+  opacity: 0;
+}
+
+.rv-header:hover .rv-header-menu {
+  opacity: 0.6;
+}
+
+.rv-header-menu:hover,
+.rv-header-menu.is-active {
+  opacity: 1 !important;
 }
 
 .rv-new-btn {

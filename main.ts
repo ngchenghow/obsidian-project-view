@@ -1357,16 +1357,12 @@ class ProjectListView extends ItemView {
     c.addClass("recent-view-list");
 
     const header = c.createDiv({ cls: "rv-header" });
-    header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const addBtn = headerActions.createEl("button", {
-      cls: "rv-new-btn",
-      text: "+ New",
-    });
-    addBtn.onclick = () =>
-      new ProjectEditModal(this.plugin.app, this.plugin, null).open();
+    const titleWrap = header.createDiv({ cls: "rv-header-title-wrap" });
+    titleWrap.createEl("span", { cls: "rv-header-title", text: "Projects" });
 
-    const menuBtn = headerActions.createEl("button", { cls: "rv-icon-btn" });
+    const menuBtn = titleWrap.createEl("button", {
+      cls: "rv-icon-btn rv-header-menu",
+    });
     if (this.reordering) menuBtn.addClass("is-active");
     setIcon(menuBtn, "more-vertical");
     menuBtn.setAttribute("aria-label", "Projects options");
@@ -1385,6 +1381,13 @@ class ProjectListView extends ItemView {
       );
       showMenu(menu, e, this.contentEl, menuBtn);
     };
+
+    const addBtn = header.createEl("button", {
+      cls: "rv-new-btn",
+      text: "+ New",
+    });
+    addBtn.onclick = () =>
+      new ProjectEditModal(this.plugin.app, this.plugin, null).open();
 
     const list = c.createDiv({ cls: "rv-project-list" });
     if (this.reordering) list.addClass("rv-reordering");

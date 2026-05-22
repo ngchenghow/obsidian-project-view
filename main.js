@@ -1495,14 +1495,11 @@ var ProjectListView = class extends import_obsidian2.ItemView {
     c.empty();
     c.addClass("recent-view-list");
     const header = c.createDiv({ cls: "rv-header" });
-    header.createEl("span", { cls: "rv-header-title", text: "Projects" });
-    const headerActions = header.createDiv({ cls: "rv-header-actions" });
-    const addBtn = headerActions.createEl("button", {
-      cls: "rv-new-btn",
-      text: "+ New"
+    const titleWrap = header.createDiv({ cls: "rv-header-title-wrap" });
+    titleWrap.createEl("span", { cls: "rv-header-title", text: "Projects" });
+    const menuBtn = titleWrap.createEl("button", {
+      cls: "rv-icon-btn rv-header-menu"
     });
-    addBtn.onclick = () => new ProjectEditModal(this.plugin.app, this.plugin, null).open();
-    const menuBtn = headerActions.createEl("button", { cls: "rv-icon-btn" });
     if (this.reordering)
       menuBtn.addClass("is-active");
     (0, import_obsidian2.setIcon)(menuBtn, "more-vertical");
@@ -1518,6 +1515,11 @@ var ProjectListView = class extends import_obsidian2.ItemView {
       );
       showMenu(menu, e, this.contentEl, menuBtn);
     };
+    const addBtn = header.createEl("button", {
+      cls: "rv-new-btn",
+      text: "+ New"
+    });
+    addBtn.onclick = () => new ProjectEditModal(this.plugin.app, this.plugin, null).open();
     const list = c.createDiv({ cls: "rv-project-list" });
     if (this.reordering)
       list.addClass("rv-reordering");
