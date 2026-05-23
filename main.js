@@ -959,57 +959,24 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     }
   }
   async settleStartupInner() {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b;
     const active = this.getActiveProject();
     if (!active)
       return;
     const ws = this.app.workspace;
     const paneId = (_a = active.activePaneId) != null ? _a : null;
-    const key = this.paneKey(active.id, paneId);
-    let firstLeaf = null;
-    let hasFile = false;
-    ws.iterateRootLeaves((leaf) => {
-      var _a2;
-      if (!firstLeaf)
-        firstLeaf = leaf;
-      if (typeof ((_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file) === "string")
-        hasFile = true;
-    });
-    const anchor = (_b = ws.getMostRecentLeaf(ws.rootSplit)) != null ? _b : firstLeaf;
-    console.log("[ProjectView] settle", {
-      activeProject: active.name,
-      hasFile,
-      hasAnchor: !!anchor,
-      savedTabs: this.paneNotes(active, paneId).length
-    });
-    if (!anchor) {
-      void this.openProject(active);
-      return;
-    }
-    this.refreshListView();
-    void this.activateContentView();
-    if (hasFile) {
-      const activePath = (_e = (_c = this.app.workspace.getActiveFile()) == null ? void 0 : _c.path) != null ? _e : (_d = anchor.getViewState().state) == null ? void 0 : _d.file;
-      const leaves = [];
-      ws.iterateRootLeaves((leaf) => leaves.push(leaf));
-      const notes = [];
-      for (const leaf of leaves) {
-        const p = (_f = leaf.getViewState().state) == null ? void 0 : _f.file;
-        if (typeof p !== "string" || notes.some((n) => n.file.path === p))
-          continue;
-        const f = this.app.vault.getAbstractFileByPath(p);
-        if (f instanceof import_obsidian2.TFile) {
-          notes.push({ file: f, eState: leaf.getEphemeralState(), active: p === activePath });
-        }
-      }
-      this.isActivating = true;
-      const keep = leaves[0];
-      for (let i = 1; i < leaves.length; i++)
-        leaves[i].detach();
-      this.projectGroups.set(
-        key,
-        keep.parent
-      );
+    this.isActivating = true;
+    const existing = [];
+    ws.iterateRootLeaves((leaf) => existing.push(leaf));
+    const keep = (_b = existing[0]) != null ? _b : ws.getLeaf(false);
+    for (const leaf of existing)
+      if (leaf !== keep)
+        leaf.detach();
+    this.projectGroups.set(this.paneKey(active.id, paneId), keep.parent);
+    const notes = this.resolveNotes(this.paneNotes(active, paneId));
+    if (notes.length === 0) {
+      await keep.setViewState({ type: "empty" });
+    } else {
       const opened = [];
       let first = true;
       for (const note of notes) {
@@ -1025,34 +992,14 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         opened.push(leaf);
       }
       const activeIdx = notes.findIndex((n) => n.active);
-      if (opened.length) {
-        ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
-      }
-      const finalGroup = keep.parent;
-      const stray = [];
-      ws.iterateRootLeaves((leaf) => {
-        if (!this.leafInGroup(leaf, finalGroup))
-          stray.push(leaf);
-      });
-      for (const leaf of stray)
-        leaf.detach();
-      this.applyGroupVisibility(key);
-      this.saveActiveProjectTabs(true);
-      window.setTimeout(() => {
-        this.isActivating = false;
-      }, 150);
-    } else {
-      this.projectGroups.set(
-        key,
-        anchor.parent
-      );
-      const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
-      for (const note of saved) {
-        const file = this.app.vault.getAbstractFileByPath(note.path);
-        if (file instanceof import_obsidian2.TFile)
-          await this.openNoteStateInActivePane(note, file);
-      }
+      ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
     }
+    this.applyGroupVisibility(this.paneKey(active.id, paneId));
+    this.refreshListView();
+    void this.activateContentView();
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
   }
   canGoBack() {
     return this.navHistory.length > 0;

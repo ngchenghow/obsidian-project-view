@@ -751,55 +751,22 @@ export default class RecentViewPlugin extends Plugin {
     if (!active) return;
     const ws = this.app.workspace;
     const paneId = active.activePaneId ?? null;
-    const key = this.paneKey(active.id, paneId);
 
-    let firstLeaf: WorkspaceLeaf | null = null;
-    let hasFile = false;
-    ws.iterateRootLeaves((leaf) => {
-      if (!firstLeaf) firstLeaf = leaf;
-      if (typeof leaf.getViewState().state?.file === "string") hasFile = true;
-    });
-    const anchor = ws.getMostRecentLeaf(ws.rootSplit) ?? firstLeaf;
-    console.log("[ProjectView] settle", {
-      activeProject: active.name,
-      hasFile,
-      hasAnchor: !!anchor,
-      savedTabs: this.paneNotes(active, paneId).length,
-    });
-    if (!anchor) {
-      void this.openProject(active);
-      return;
-    }
+    // Obsidian restores every pane from the last session (one per project
+    // visited) as separate splits. Those tabs belong to different projects, so
+    // instead of merging them, close them all and rebuild just the active
+    // project's pane from its own saved tabs (others rebuild when opened).
+    this.isActivating = true;
+    const existing: WorkspaceLeaf[] = [];
+    ws.iterateRootLeaves((leaf) => existing.push(leaf));
+    const keep = existing[0] ?? ws.getLeaf(false);
+    for (const leaf of existing) if (leaf !== keep) leaf.detach();
+    this.projectGroups.set(this.paneKey(active.id, paneId), keep.parent as unknown as WorkspaceParent);
 
-    this.refreshListView();
-    void this.activateContentView();
-
-    if (hasFile) {
-      // Obsidian may have restored the previous layout as several split panes
-      // (hidden panes from last session become visible). Consolidate every
-      // restored note into a single tab group.
-      const activePath =
-        this.app.workspace.getActiveFile()?.path ??
-        (anchor as WorkspaceLeaf).getViewState().state?.file;
-      const leaves: WorkspaceLeaf[] = [];
-      ws.iterateRootLeaves((leaf) => leaves.push(leaf));
-      const notes: { file: TFile; eState?: Record<string, unknown>; active: boolean }[] = [];
-      for (const leaf of leaves) {
-        const p = leaf.getViewState().state?.file;
-        if (typeof p !== "string" || notes.some((n) => n.file.path === p)) continue;
-        const f = this.app.vault.getAbstractFileByPath(p);
-        if (f instanceof TFile) {
-          notes.push({ file: f, eState: leaf.getEphemeralState(), active: p === activePath });
-        }
-      }
-
-      this.isActivating = true;
-      const keep = leaves[0];
-      for (let i = 1; i < leaves.length; i++) leaves[i].detach();
-      this.projectGroups.set(
-        key,
-        keep.parent as unknown as WorkspaceParent
-      );
+    const notes = this.resolveNotes(this.paneNotes(active, paneId));
+    if (notes.length === 0) {
+      await keep.setViewState({ type: "empty" });
+    } else {
       const opened: WorkspaceLeaf[] = [];
       let first = true;
       for (const note of notes) {
@@ -808,8 +775,6 @@ export default class RecentViewPlugin extends Plugin {
           leaf = keep;
           first = false;
         } else {
-          // Make the kept leaf active so the new tab joins its group
-          // (rather than opening as a split).
           ws.setActiveLeaf(keep, { focus: false });
           leaf = ws.getLeaf("tab");
         }
@@ -817,34 +782,15 @@ export default class RecentViewPlugin extends Plugin {
         opened.push(leaf);
       }
       const activeIdx = notes.findIndex((n) => n.active);
-      if (opened.length) {
-        ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
-      }
-      // Remove any stray panes (e.g. an empty "New tab") left outside the
-      // consolidated group.
-      const finalGroup = keep.parent as unknown as WorkspaceParent;
-      const stray: WorkspaceLeaf[] = [];
-      ws.iterateRootLeaves((leaf) => {
-        if (!this.leafInGroup(leaf, finalGroup)) stray.push(leaf);
-      });
-      for (const leaf of stray) leaf.detach();
-      this.applyGroupVisibility(key);
-      this.saveActiveProjectTabs(true);
-      window.setTimeout(() => {
-        this.isActivating = false;
-      }, 150);
-    } else {
-      // Adopt the (empty) group and reopen the saved tabs, if any.
-      this.projectGroups.set(
-        key,
-        (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent
-      );
-      const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
-      for (const note of saved) {
-        const file = this.app.vault.getAbstractFileByPath(note.path);
-        if (file instanceof TFile) await this.openNoteStateInActivePane(note, file);
-      }
+      ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
     }
+
+    this.applyGroupVisibility(this.paneKey(active.id, paneId));
+    this.refreshListView();
+    void this.activateContentView();
+    window.setTimeout(() => {
+      this.isActivating = false;
+    }, 150);
   }
 
   canGoBack(): boolean {
