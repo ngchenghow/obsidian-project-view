@@ -726,18 +726,17 @@ export default class RecentViewPlugin extends Plugin {
    * reopen the project's saved tabs.
    */
   private restoreOnStartup(): void {
-    // Run as soon as the layout is ready so the extra restored panes are
-    // consolidated before they linger on screen (avoids a visible flash).
-    void this.settleStartup();
-  }
-
-  private async settleStartup(): Promise<void> {
-    // Hide the main area while we consolidate so the user doesn't see the
-    // restored panes/tabs being rearranged; reveal the finished single pane.
+    // Hide the main area immediately so the restored split panes never show,
+    // then (while hidden) give Obsidian a moment to finalise the active tab
+    // before consolidating into a single pane.
     const rootEl = (
       this.app.workspace.rootSplit as unknown as { containerEl?: HTMLElement }
     ).containerEl;
     if (rootEl) rootEl.style.visibility = "hidden";
+    window.setTimeout(() => void this.settleStartup(rootEl), 120);
+  }
+
+  private async settleStartup(rootEl: HTMLElement | undefined): Promise<void> {
     try {
       await this.settleStartupInner();
     } finally {
