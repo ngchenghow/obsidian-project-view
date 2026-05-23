@@ -762,7 +762,9 @@ export default class RecentViewPlugin extends Plugin {
       // Obsidian may have restored the previous layout as several split panes
       // (hidden panes from last session become visible). Consolidate every
       // restored note into a single tab group.
-      const activePath = (anchor as WorkspaceLeaf).getViewState().state?.file;
+      const activePath =
+        this.app.workspace.getActiveFile()?.path ??
+        (anchor as WorkspaceLeaf).getViewState().state?.file;
       const leaves: WorkspaceLeaf[] = [];
       ws.iterateRootLeaves((leaf) => leaves.push(leaf));
       const notes: { file: TFile; eState?: Record<string, unknown>; active: boolean }[] = [];

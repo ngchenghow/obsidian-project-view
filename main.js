@@ -947,7 +947,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     window.setTimeout(() => void this.settleStartup(), 800);
   }
   async settleStartup() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     this.starting = false;
     const active = this.getActiveProject();
     if (!active)
@@ -978,12 +978,12 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     this.refreshListView();
     void this.activateContentView();
     if (hasFile) {
-      const activePath = (_c = anchor.getViewState().state) == null ? void 0 : _c.file;
+      const activePath = (_e = (_c = this.app.workspace.getActiveFile()) == null ? void 0 : _c.path) != null ? _e : (_d = anchor.getViewState().state) == null ? void 0 : _d.file;
       const leaves = [];
       ws.iterateRootLeaves((leaf) => leaves.push(leaf));
       const notes = [];
       for (const leaf of leaves) {
-        const p = (_d = leaf.getViewState().state) == null ? void 0 : _d.file;
+        const p = (_f = leaf.getViewState().state) == null ? void 0 : _f.file;
         if (typeof p !== "string" || notes.some((n) => n.file.path === p))
           continue;
         const f = this.app.vault.getAbstractFileByPath(p);
