@@ -732,11 +732,18 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   private async settleStartup(): Promise<void> {
+    // Hide the main area while we consolidate so the user doesn't see the
+    // restored panes/tabs being rearranged; reveal the finished single pane.
+    const rootEl = (
+      this.app.workspace.rootSplit as unknown as { containerEl?: HTMLElement }
+    ).containerEl;
+    if (rootEl) rootEl.style.visibility = "hidden";
     try {
       await this.settleStartupInner();
     } finally {
       // Keep ignoring layout-change until consolidation is fully done.
       this.starting = false;
+      if (rootEl) rootEl.style.visibility = "";
     }
   }
 

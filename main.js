@@ -947,10 +947,15 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     void this.settleStartup();
   }
   async settleStartup() {
+    const rootEl = this.app.workspace.rootSplit.containerEl;
+    if (rootEl)
+      rootEl.style.visibility = "hidden";
     try {
       await this.settleStartupInner();
     } finally {
       this.starting = false;
+      if (rootEl)
+        rootEl.style.visibility = "";
     }
   }
   async settleStartupInner() {
