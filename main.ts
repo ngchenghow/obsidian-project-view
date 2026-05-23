@@ -726,24 +726,38 @@ export default class RecentViewPlugin extends Plugin {
    * reopen the project's saved tabs.
    */
   private restoreOnStartup(): void {
-    // Hide the main area immediately so the restored split panes never show,
-    // then (while hidden) give Obsidian a moment to finalise the active tab
-    // before consolidating into a single pane.
+    // Hide the main area immediately so the restored split panes never show
+    // while we rebuild the active project's pane.
     const rootEl = (
       this.app.workspace.rootSplit as unknown as { containerEl?: HTMLElement }
     ).containerEl;
     if (rootEl) rootEl.style.visibility = "hidden";
-    window.setTimeout(() => void this.settleStartup(rootEl), 120);
+    window.setTimeout(() => void this.settleStartup(rootEl), 300);
   }
 
   private async settleStartup(rootEl: HTMLElement | undefined): Promise<void> {
     try {
       await this.settleStartupInner();
+      // Obsidian may keep restoring panes after onLayoutReady; wait, then drop
+      // any stray panes that aren't part of the active project's pane.
+      await new Promise((r) => window.setTimeout(r, 500));
+      this.cleanupStrayPanes();
     } finally {
       // Keep ignoring layout-change until consolidation is fully done.
       this.starting = false;
       if (rootEl) rootEl.style.visibility = "";
     }
+  }
+
+  /** Detach any main-area leaf that isn't part of the active project's pane. */
+  private cleanupStrayPanes(): void {
+    const group = this.getActiveGroup();
+    if (!group) return;
+    const stray: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      if (!this.leafInGroup(leaf, group)) stray.push(leaf);
+    });
+    for (const leaf of stray) leaf.detach();
   }
 
   private async settleStartupInner(): Promise<void> {

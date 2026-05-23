@@ -947,16 +947,31 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const rootEl = this.app.workspace.rootSplit.containerEl;
     if (rootEl)
       rootEl.style.visibility = "hidden";
-    window.setTimeout(() => void this.settleStartup(rootEl), 120);
+    window.setTimeout(() => void this.settleStartup(rootEl), 300);
   }
   async settleStartup(rootEl) {
     try {
       await this.settleStartupInner();
+      await new Promise((r) => window.setTimeout(r, 500));
+      this.cleanupStrayPanes();
     } finally {
       this.starting = false;
       if (rootEl)
         rootEl.style.visibility = "";
     }
+  }
+  /** Detach any main-area leaf that isn't part of the active project's pane. */
+  cleanupStrayPanes() {
+    const group = this.getActiveGroup();
+    if (!group)
+      return;
+    const stray = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      if (!this.leafInGroup(leaf, group))
+        stray.push(leaf);
+    });
+    for (const leaf of stray)
+      leaf.detach();
   }
   async settleStartupInner() {
     var _a, _b;
