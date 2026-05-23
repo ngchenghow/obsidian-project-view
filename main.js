@@ -506,6 +506,9 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     // True while the app is quitting / plugin unloading (avoid wiping saved tabs
     // when the workspace tears down its leaves).
     this.unloading = false;
+    // True during the startup settling window (Obsidian may still be (re)building
+    // the layout, so ignore layout-change events that would wipe restored tabs).
+    this.starting = true;
     this._drive = null;
   }
   get drive() {
@@ -935,42 +938,58 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     await this.showPane(project, (_a = project.activePaneId) != null ? _a : null);
   }
   /**
-   * On startup, adopt Obsidian's already-restored main-area tab group as the
-   * active project's pane (so open + active tabs persist across restarts),
-   * tidy away any other restored groups, and record the tabs.
+   * On startup, wait for Obsidian to finish restoring its layout, then adopt
+   * the active project's existing main tab group WITHOUT detaching anything
+   * (so restored tabs aren't lost). Only if the pane is genuinely empty do we
+   * reopen the project's saved tabs.
    */
   restoreOnStartup() {
-    var _a, _b, _c;
+    window.setTimeout(() => void this.settleStartup(), 800);
+  }
+  async settleStartup() {
+    var _a, _b;
+    this.starting = false;
     const active = this.getActiveProject();
     if (!active)
       return;
-    const { workspace } = this.app;
-    let restoredFile = false;
+    const ws = this.app.workspace;
+    const paneId = (_a = active.activePaneId) != null ? _a : null;
+    const key = this.paneKey(active.id, paneId);
     let firstLeaf = null;
-    workspace.iterateRootLeaves((leaf) => {
+    let hasFile = false;
+    ws.iterateRootLeaves((leaf) => {
       var _a2;
       if (!firstLeaf)
         firstLeaf = leaf;
-      if (typeof ((_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file) === "string") {
-        restoredFile = true;
-      }
+      if (typeof ((_a2 = leaf.getViewState().state) == null ? void 0 : _a2.file) === "string")
+        hasFile = true;
     });
-    const anchor = (_a = workspace.getMostRecentLeaf(workspace.rootSplit)) != null ? _a : firstLeaf;
-    console.log("[ProjectView] startup", {
+    const anchor = (_b = ws.getMostRecentLeaf(ws.rootSplit)) != null ? _b : firstLeaf;
+    console.log("[ProjectView] settle", {
       activeProject: active.name,
-      restoredFile,
+      hasFile,
       hasAnchor: !!anchor,
-      savedTabs: this.paneNotes(active, (_b = active.activePaneId) != null ? _b : null).length
+      savedTabs: this.paneNotes(active, paneId).length
     });
-    if (restoredFile && anchor) {
-      const group = anchor.parent;
-      const key = this.paneKey(active.id, (_c = active.activePaneId) != null ? _c : null);
-      this.projectGroups.set(key, group);
-      this.refreshListView();
-      void this.activateContentView();
+    if (!anchor) {
+      void this.openProject(active);
+      return;
+    }
+    this.projectGroups.set(
+      key,
+      anchor.parent
+    );
+    this.refreshListView();
+    void this.activateContentView();
+    if (hasFile) {
       this.saveActiveProjectTabs(true);
     } else {
-      void this.openProject(active);
+      const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
+      for (const note of saved) {
+        const file = this.app.vault.getAbstractFileByPath(note.path);
+        if (file instanceof import_obsidian2.TFile)
+          await this.openNoteStateInActivePane(note, file);
+      }
     }
   }
   canGoBack() {
@@ -1350,7 +1369,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    */
   onLayoutChange() {
     var _a;
-    if (this.isActivating || this.unloading)
+    if (this.isActivating || this.unloading || this.starting)
       return;
     const project = this.getActiveProject();
     if (!project)

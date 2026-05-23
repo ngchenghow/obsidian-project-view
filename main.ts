@@ -236,6 +236,9 @@ export default class RecentViewPlugin extends Plugin {
   // True while the app is quitting / plugin unloading (avoid wiping saved tabs
   // when the workspace tears down its leaves).
   private unloading = false;
+  // True during the startup settling window (Obsidian may still be (re)building
+  // the layout, so ignore layout-change events that would wipe restored tabs).
+  private starting = true;
   private _drive: GoogleDriveClient | null = null;
 
   get drive(): GoogleDriveClient {
@@ -717,45 +720,59 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   /**
-   * On startup, adopt Obsidian's already-restored main-area tab group as the
-   * active project's pane (so open + active tabs persist across restarts),
-   * tidy away any other restored groups, and record the tabs.
+   * On startup, wait for Obsidian to finish restoring its layout, then adopt
+   * the active project's existing main tab group WITHOUT detaching anything
+   * (so restored tabs aren't lost). Only if the pane is genuinely empty do we
+   * reopen the project's saved tabs.
    */
   private restoreOnStartup(): void {
+    window.setTimeout(() => void this.settleStartup(), 800);
+  }
+
+  private async settleStartup(): Promise<void> {
+    this.starting = false;
     const active = this.getActiveProject();
     if (!active) return;
-    const { workspace } = this.app;
+    const ws = this.app.workspace;
+    const paneId = active.activePaneId ?? null;
+    const key = this.paneKey(active.id, paneId);
 
-    // Did Obsidian restore any open notes in the main area?
-    let restoredFile = false;
     let firstLeaf: WorkspaceLeaf | null = null;
-    workspace.iterateRootLeaves((leaf) => {
+    let hasFile = false;
+    ws.iterateRootLeaves((leaf) => {
       if (!firstLeaf) firstLeaf = leaf;
-      if (typeof leaf.getViewState().state?.file === "string") {
-        restoredFile = true;
-      }
+      if (typeof leaf.getViewState().state?.file === "string") hasFile = true;
     });
-    const anchor = workspace.getMostRecentLeaf(workspace.rootSplit) ?? firstLeaf;
-
-    console.log("[ProjectView] startup", {
+    const anchor = ws.getMostRecentLeaf(ws.rootSplit) ?? firstLeaf;
+    console.log("[ProjectView] settle", {
       activeProject: active.name,
-      restoredFile,
+      hasFile,
       hasAnchor: !!anchor,
-      savedTabs: this.paneNotes(active, active.activePaneId ?? null).length,
+      savedTabs: this.paneNotes(active, paneId).length,
     });
+    if (!anchor) {
+      void this.openProject(active);
+      return;
+    }
 
-    if (restoredFile && anchor) {
-      // Adopt the restored tab group as the active project's pane and keep its
-      // tabs exactly as Obsidian restored them.
-      const group = (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent;
-      const key = this.paneKey(active.id, active.activePaneId ?? null);
-      this.projectGroups.set(key, group);
-      this.refreshListView();
-      void this.activateContentView();
+    // Adopt the current main tab group as the active pane (no detach).
+    this.projectGroups.set(
+      key,
+      (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent
+    );
+    this.refreshListView();
+    void this.activateContentView();
+
+    if (hasFile) {
+      // Obsidian restored the tabs — keep them, just record the set.
       this.saveActiveProjectTabs(true);
     } else {
-      // Nothing was restored: rebuild the active pane from saved tabs.
-      void this.openProject(active);
+      // Empty pane: reopen the saved tabs (if any) into this group.
+      const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
+      for (const note of saved) {
+        const file = this.app.vault.getAbstractFileByPath(note.path);
+        if (file instanceof TFile) await this.openNoteStateInActivePane(note, file);
+      }
     }
   }
 
@@ -1203,7 +1220,7 @@ export default class RecentViewPlugin extends Plugin {
    * new tab so the project always has a visible pane.
    */
   private onLayoutChange(): void {
-    if (this.isActivating || this.unloading) return;
+    if (this.isActivating || this.unloading || this.starting) return;
     const project = this.getActiveProject();
     if (!project) return;
     const paneId = project.activePaneId ?? null;
