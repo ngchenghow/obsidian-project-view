@@ -802,6 +802,14 @@ export default class RecentViewPlugin extends Plugin {
       if (opened.length) {
         ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
       }
+      // Remove any stray panes (e.g. an empty "New tab") left outside the
+      // consolidated group.
+      const finalGroup = keep.parent as unknown as WorkspaceParent;
+      const stray: WorkspaceLeaf[] = [];
+      ws.iterateRootLeaves((leaf) => {
+        if (!this.leafInGroup(leaf, finalGroup)) stray.push(leaf);
+      });
+      for (const leaf of stray) leaf.detach();
       this.applyGroupVisibility(key);
       this.saveActiveProjectTabs(true);
       window.setTimeout(() => {

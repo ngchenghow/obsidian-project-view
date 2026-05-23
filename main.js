@@ -1017,6 +1017,14 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       if (opened.length) {
         ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
       }
+      const finalGroup = keep.parent;
+      const stray = [];
+      ws.iterateRootLeaves((leaf) => {
+        if (!this.leafInGroup(leaf, finalGroup))
+          stray.push(leaf);
+      });
+      for (const leaf of stray)
+        leaf.detach();
       this.applyGroupVisibility(key);
       this.saveActiveProjectTabs(true);
       window.setTimeout(() => {
