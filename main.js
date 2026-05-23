@@ -944,11 +944,17 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
    * reopen the project's saved tabs.
    */
   restoreOnStartup() {
-    window.setTimeout(() => void this.settleStartup(), 800);
+    void this.settleStartup();
   }
   async settleStartup() {
+    try {
+      await this.settleStartupInner();
+    } finally {
+      this.starting = false;
+    }
+  }
+  async settleStartupInner() {
     var _a, _b, _c, _d, _e, _f;
-    this.starting = false;
     const active = this.getActiveProject();
     if (!active)
       return;

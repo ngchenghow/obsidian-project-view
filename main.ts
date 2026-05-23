@@ -726,11 +726,21 @@ export default class RecentViewPlugin extends Plugin {
    * reopen the project's saved tabs.
    */
   private restoreOnStartup(): void {
-    window.setTimeout(() => void this.settleStartup(), 800);
+    // Run as soon as the layout is ready so the extra restored panes are
+    // consolidated before they linger on screen (avoids a visible flash).
+    void this.settleStartup();
   }
 
   private async settleStartup(): Promise<void> {
-    this.starting = false;
+    try {
+      await this.settleStartupInner();
+    } finally {
+      // Keep ignoring layout-change until consolidation is fully done.
+      this.starting = false;
+    }
+  }
+
+  private async settleStartupInner(): Promise<void> {
     const active = this.getActiveProject();
     if (!active) return;
     const ws = this.app.workspace;
