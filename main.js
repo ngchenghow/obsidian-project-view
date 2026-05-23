@@ -1002,8 +1002,14 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       const opened = [];
       let first = true;
       for (const note of notes) {
-        const leaf = first ? keep : ws.getLeaf("tab");
-        first = false;
+        let leaf;
+        if (first) {
+          leaf = keep;
+          first = false;
+        } else {
+          ws.setActiveLeaf(keep, { focus: false });
+          leaf = ws.getLeaf("tab");
+        }
         await leaf.openFile(note.file, { eState: note.eState });
         opened.push(leaf);
       }

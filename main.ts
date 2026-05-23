@@ -785,8 +785,16 @@ export default class RecentViewPlugin extends Plugin {
       const opened: WorkspaceLeaf[] = [];
       let first = true;
       for (const note of notes) {
-        const leaf = first ? keep : ws.getLeaf("tab");
-        first = false;
+        let leaf: WorkspaceLeaf;
+        if (first) {
+          leaf = keep;
+          first = false;
+        } else {
+          // Make the kept leaf active so the new tab joins its group
+          // (rather than opening as a split).
+          ws.setActiveLeaf(keep, { focus: false });
+          leaf = ws.getLeaf("tab");
+        }
         await leaf.openFile(note.file, { eState: note.eState });
         opened.push(leaf);
       }
