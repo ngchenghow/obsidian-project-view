@@ -755,19 +755,56 @@ export default class RecentViewPlugin extends Plugin {
       return;
     }
 
-    // Adopt the current main tab group as the active pane (no detach).
-    this.projectGroups.set(
-      key,
-      (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent
-    );
     this.refreshListView();
     void this.activateContentView();
 
     if (hasFile) {
-      // Obsidian restored the tabs — keep them, just record the set.
+      // Obsidian may have restored the previous layout as several split panes
+      // (hidden panes from last session become visible). Consolidate every
+      // restored note into a single tab group.
+      const activePath = (anchor as WorkspaceLeaf).getViewState().state?.file;
+      const leaves: WorkspaceLeaf[] = [];
+      ws.iterateRootLeaves((leaf) => leaves.push(leaf));
+      const notes: { file: TFile; eState?: Record<string, unknown>; active: boolean }[] = [];
+      for (const leaf of leaves) {
+        const p = leaf.getViewState().state?.file;
+        if (typeof p !== "string" || notes.some((n) => n.file.path === p)) continue;
+        const f = this.app.vault.getAbstractFileByPath(p);
+        if (f instanceof TFile) {
+          notes.push({ file: f, eState: leaf.getEphemeralState(), active: p === activePath });
+        }
+      }
+
+      this.isActivating = true;
+      const keep = leaves[0];
+      for (let i = 1; i < leaves.length; i++) leaves[i].detach();
+      this.projectGroups.set(
+        key,
+        keep.parent as unknown as WorkspaceParent
+      );
+      const opened: WorkspaceLeaf[] = [];
+      let first = true;
+      for (const note of notes) {
+        const leaf = first ? keep : ws.getLeaf("tab");
+        first = false;
+        await leaf.openFile(note.file, { eState: note.eState });
+        opened.push(leaf);
+      }
+      const activeIdx = notes.findIndex((n) => n.active);
+      if (opened.length) {
+        ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
+      }
+      this.applyGroupVisibility(key);
       this.saveActiveProjectTabs(true);
+      window.setTimeout(() => {
+        this.isActivating = false;
+      }, 150);
     } else {
-      // Empty pane: reopen the saved tabs (if any) into this group.
+      // Adopt the (empty) group and reopen the saved tabs, if any.
+      this.projectGroups.set(
+        key,
+        (anchor as WorkspaceLeaf).parent as unknown as WorkspaceParent
+      );
       const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
       for (const note of saved) {
         const file = this.app.vault.getAbstractFileByPath(note.path);

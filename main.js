@@ -947,7 +947,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     window.setTimeout(() => void this.settleStartup(), 800);
   }
   async settleStartup() {
-    var _a, _b;
+    var _a, _b, _c, _d;
     this.starting = false;
     const active = this.getActiveProject();
     if (!active)
@@ -975,15 +975,52 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       void this.openProject(active);
       return;
     }
-    this.projectGroups.set(
-      key,
-      anchor.parent
-    );
     this.refreshListView();
     void this.activateContentView();
     if (hasFile) {
+      const activePath = (_c = anchor.getViewState().state) == null ? void 0 : _c.file;
+      const leaves = [];
+      ws.iterateRootLeaves((leaf) => leaves.push(leaf));
+      const notes = [];
+      for (const leaf of leaves) {
+        const p = (_d = leaf.getViewState().state) == null ? void 0 : _d.file;
+        if (typeof p !== "string" || notes.some((n) => n.file.path === p))
+          continue;
+        const f = this.app.vault.getAbstractFileByPath(p);
+        if (f instanceof import_obsidian2.TFile) {
+          notes.push({ file: f, eState: leaf.getEphemeralState(), active: p === activePath });
+        }
+      }
+      this.isActivating = true;
+      const keep = leaves[0];
+      for (let i = 1; i < leaves.length; i++)
+        leaves[i].detach();
+      this.projectGroups.set(
+        key,
+        keep.parent
+      );
+      const opened = [];
+      let first = true;
+      for (const note of notes) {
+        const leaf = first ? keep : ws.getLeaf("tab");
+        first = false;
+        await leaf.openFile(note.file, { eState: note.eState });
+        opened.push(leaf);
+      }
+      const activeIdx = notes.findIndex((n) => n.active);
+      if (opened.length) {
+        ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
+      }
+      this.applyGroupVisibility(key);
       this.saveActiveProjectTabs(true);
+      window.setTimeout(() => {
+        this.isActivating = false;
+      }, 150);
     } else {
+      this.projectGroups.set(
+        key,
+        anchor.parent
+      );
       const saved = this.paneNotes(active, paneId).map((n) => ({ ...n }));
       for (const note of saved) {
         const file = this.app.vault.getAbstractFileByPath(note.path);
