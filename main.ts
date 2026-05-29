@@ -1,5 +1,7 @@
 import {
+  Editor,
   ItemView,
+  MarkdownView,
   Menu,
   Modal,
   Notice,
@@ -12,6 +14,7 @@ import {
   Vault,
   WorkspaceLeaf,
   WorkspaceParent,
+  WorkspaceSplit,
   FuzzySuggestModal,
   setIcon,
   App,
@@ -24,6 +27,7 @@ import {
 
 const VIEW_TYPE_PROJECT_LIST = "recent-view-project-list";
 const VIEW_TYPE_PROJECT_CONTENT = "recent-view-project-content";
+const VIEW_TYPE_RECENT_EDITS = "recent-view-recent-edits";
 
 interface OpenNote {
   path: string;
@@ -71,9 +75,43 @@ interface RecentViewData {
   activeProjectId: string | null;
 }
 
+type EditKind = "add" | "delete" | "modify";
+
+// The character range of the added/modified text, so clicking an edit can select
+// exactly what changed (even across multiple lines).
+interface EditSel {
+  fromLine: number;
+  fromCh: number;
+  toLine: number;
+  toCh: number;
+}
+
+// A single recorded edit: where it happened (path + line/ch), the added/removed
+// text snippet, what kind of change it was, and when, so the Recent edits pane
+// can show it and jump back to the exact spot.
+interface EditRecord {
+  path: string;
+  text: string;
+  kind: EditKind;
+  line: number; // region start line, used for navigation
+  lastLine: number; // most recent line touched (for merging adjacent edits)
+  ch: number;
+  time: number;
+  // Selection range of the added/modified text (absent for deletions).
+  sel?: EditSel;
+}
+
 interface RecentViewSettings {
   // Vault-relative path of the note that stores this vault's project data.
   dataNotePath: string;
+  // When true, other project pane groups are closed when switching projects
+  // so the workspace always has a single flat tab group. When false, pane
+  // groups are kept alive and hidden with CSS for faster repeat-switching.
+  closePanesOnSwitch: boolean;
+  // How many recently edited notes the Recent edits pane keeps.
+  editHistorySize: number;
+  // When true, whitespace-only changes are recorded in the Recent edits pane.
+  trackWhitespaceEdits: boolean;
   // Google Drive OAuth credentials + token.
   gdriveClientId: string;
   gdriveClientSecret: string;
@@ -83,9 +121,13 @@ interface RecentViewSettings {
 const DEFAULT_DATA_NOTE = "ProjectView.md";
 // Older releases stored data here; read from it if the new note is missing.
 const LEGACY_DATA_NOTE = "RecentView.md";
+const DEFAULT_EDIT_HISTORY = 50;
 
 const DEFAULT_SETTINGS: RecentViewSettings = {
   dataNotePath: DEFAULT_DATA_NOTE,
+  closePanesOnSwitch: true,
+  editHistorySize: DEFAULT_EDIT_HISTORY,
+  trackWhitespaceEdits: false,
   gdriveClientId: "",
   gdriveClientSecret: "",
   gdriveRefreshToken: "",
@@ -226,6 +268,19 @@ function showMenu(
 export default class RecentViewPlugin extends Plugin {
   data: RecentViewData = { projects: [], activeProjectId: null };
   settings: RecentViewSettings = { ...DEFAULT_SETTINGS };
+  // Recently edited notes, most recent first (one entry per note).
+  editHistory: EditRecord[] = [];
+  private editSaveTimer: number | null = null;
+  // The path whose document we've snapshotted in lastEditDoc.
+  private editBaselinePath: string | null = null;
+  // The document as of the previous change, used as the baseline when a new edit
+  // begins (a change on a non-adjacent line).
+  private lastEditDoc = "";
+  // Whether the top history row is the live edit currently being extended.
+  private editRegionActive = false;
+  // Each live edit's starting document, kept across tab switches so returning to
+  // a note can continue the same edit on an adjacent line. Not persisted.
+  private editBaselineByRecord: WeakMap<EditRecord, string> = new WeakMap();
   private isActivating = false;
   private noteWriteTimer: number | null = null;
   // Live tab group (pane) per project, kept alive so switching just shows/hides
@@ -239,6 +294,19 @@ export default class RecentViewPlugin extends Plugin {
   // True during the startup settling window (Obsidian may still be (re)building
   // the layout, so ignore layout-change events that would wipe restored tabs).
   private starting = true;
+  // Leaves opened by settleStartupInner; used by cleanupStrayPanes to remove
+  // any other leaf that Obsidian async-restored into the same group.
+  private _startupOpenedLeaves: WorkspaceLeaf[] | null = null;
+  // Serializes pane switches so rapid clicks run one at a time instead of
+  // concurrently (which would create stray split panes).
+  private _switchQueue: Promise<unknown> = Promise.resolve();
+  // Number of pane switches queued or running; the isActivating guard is only
+  // released once this drains to zero so a later switch isn't interrupted.
+  private _pendingSwitches = 0;
+  // Bumped the instant a new switch is requested. An in-flight pane build
+  // checks this between tab opens and aborts as soon as it's superseded, so a
+  // newer click never has to wait for the old project's tabs to finish opening.
+  private _showPaneGen = 0;
   private _drive: GoogleDriveClient | null = null;
 
   get drive(): GoogleDriveClient {
@@ -265,9 +333,16 @@ export default class RecentViewPlugin extends Plugin {
       VIEW_TYPE_PROJECT_CONTENT,
       (leaf) => new ProjectContentView(leaf, this)
     );
+    this.registerView(
+      VIEW_TYPE_RECENT_EDITS,
+      (leaf) => new RecentEditsView(leaf, this)
+    );
 
     this.addRibbonIcon("folder-kanban", "Recent View: projects", () =>
       this.activateListView()
+    );
+    this.addRibbonIcon("history", "Recent View: recent edits", () =>
+      this.activateEditsView()
     );
 
     this.addCommand({
@@ -275,6 +350,25 @@ export default class RecentViewPlugin extends Plugin {
       name: "Open projects pane",
       callback: () => this.activateListView(),
     });
+
+    this.addCommand({
+      id: "open-recent-edits-pane",
+      name: "Open recent edits pane",
+      callback: () => this.activateEditsView(),
+    });
+
+    // Record edits as the user types so the Recent edits pane can show what was
+    // added/changed and jump back to that spot. Snapshot the doc on open so we
+    // can diff out just the inserted text.
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => this.setEditBaseline(file))
+    );
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (editor, info) => {
+        const file = info.file;
+        if (file instanceof TFile) this.onEditorChange(editor, file);
+      })
+    );
 
     this.addCommand({
       id: "new-project",
@@ -301,11 +395,14 @@ export default class RecentViewPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.onLayoutChange())
     );
-    // Update which note is highlighted as "open" when the active tab changes.
+    // Update which note is highlighted as "open" when the active tab changes,
+    // and refresh the edit baseline — active-leaf-change (unlike file-open) also
+    // fires when switching back to an already-open tab.
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () =>
-        this.refreshOpenHighlights()
-      )
+      this.app.workspace.on("active-leaf-change", () => {
+        this.setEditBaseline(this.app.workspace.getActiveFile());
+        this.refreshOpenHighlights();
+      })
     );
 
     // Save the open tabs before the app quits (and stop teardown from wiping
@@ -314,17 +411,39 @@ export default class RecentViewPlugin extends Plugin {
       this.app.workspace.on("quit", (tasks) => {
         this.unloading = true;
         this.saveActiveProjectTabs(true);
+
+        // Close every non-active project pane so Obsidian only saves the
+        // active pane's tabs to its workspace state.  Without this, every
+        // pane visited during the session would be restored on next startup,
+        // flooding the workspace with stale tabs before the plugin can clean
+        // them up.
+        const activeProject = this.getActiveProject();
+        const activeKey = activeProject
+          ? this.paneKey(activeProject.id, activeProject.activePaneId ?? null)
+          : null;
+        for (const [key, group] of [...this.projectGroups]) {
+          if (key === activeKey) continue;
+          const toClose: WorkspaceLeaf[] = [];
+          this.app.workspace.iterateRootLeaves((leaf) => {
+            if (this.leafInGroup(leaf, group)) toClose.push(leaf);
+          });
+          for (const leaf of toClose) leaf.detach();
+          this.projectGroups.delete(key);
+        }
+
         tasks.add(async () => {
           await this.persistNow();
         });
       })
     );
 
-    // Add "Add to current project" to the native file/folder context menu.
+    // Add project-aware items to the native file/folder context menu and to
+    // the tab right-click menu (source === 'tab-header').
     this.registerEvent(
-      this.app.workspace.on("file-menu", (menu, file) => {
+      this.app.workspace.on("file-menu", (menu, file, source, leaf) => {
         const project = this.getActiveProject();
         if (!project) return;
+
         if (file instanceof TFolder) {
           if (project.folders.includes(file.path)) return;
           menu.addItem((i) =>
@@ -334,13 +453,76 @@ export default class RecentViewPlugin extends Plugin {
               .onClick(() => void this.addFolderToProject(project, file))
           );
         } else if (file instanceof TFile) {
-          if (project.notes.includes(file.path)) return;
-          menu.addItem((i) =>
-            i
-              .setTitle(`Add note to project "${project.name}"`)
-              .setIcon("file-plus")
-              .onClick(() => void this.addNoteToProject(project, file))
-          );
+          // --- Tab right-click additions ---
+          if (source === "tab-header" || source === "more-options") {
+            menu.addSeparator();
+
+            // Pin / Unpin
+            const pinned = (project.pinned ?? []).includes(file.path);
+            menu.addItem((i) =>
+              i
+                .setTitle(pinned ? "Unpin from top" : "Pin to top")
+                .setIcon(pinned ? "pin-off" : "pin")
+                .onClick(() => void this.togglePin(project, file.path))
+            );
+
+            // Reveal in the right pane
+            menu.addItem((i) =>
+              i
+                .setTitle("Reveal in project pane")
+                .setIcon("locate")
+                .onClick(() => this.scrollToFileInContentView(file.path))
+            );
+
+            // Move to pane (only when named panes exist)
+            if (project.panes.length > 0) {
+              const currentPaneId = project.activePaneId ?? null;
+              const destinations: { id: string | null; name: string }[] = [];
+              if (currentPaneId !== null) {
+                destinations.push({ id: null, name: "Main" });
+              }
+              for (const pane of project.panes) {
+                if (pane.id !== currentPaneId) {
+                  destinations.push({ id: pane.id, name: pane.name });
+                }
+              }
+              if (destinations.length > 0) {
+                menu.addSeparator();
+                for (const dest of destinations) {
+                  menu.addItem((i) =>
+                    i
+                      .setTitle(`Move to pane: ${dest.name}`)
+                      .setIcon("panel-right-open")
+                      .onClick(() =>
+                        void this.moveTabToPane(
+                          project,
+                          file,
+                          leaf ?? null,
+                          dest.id
+                        )
+                      )
+                  );
+                }
+              }
+            }
+
+            menu.addSeparator();
+          }
+
+          // "Add to project" — only when not already a member
+          const isInProject =
+            project.notes.includes(file.path) ||
+            project.folders.some(
+              (fp) => file.path === fp || file.path.startsWith(fp + "/")
+            );
+          if (!isInProject) {
+            menu.addItem((i) =>
+              i
+                .setTitle(`Add note to project "${project.name}"`)
+                .setIcon("file-plus")
+                .onClick(() => void this.addNoteToProject(project, file))
+            );
+          }
         }
       })
     );
@@ -355,13 +537,18 @@ export default class RecentViewPlugin extends Plugin {
       // Keep the content pane in sync when notes are added/removed/renamed in
       // the vault (e.g. a new note created inside a project folder). Registered
       // after layout is ready so the initial "create" burst is not handled.
-      const onVaultChange = () => this.refreshContentView();
-      this.registerEvent(this.app.vault.on("create", onVaultChange));
-      this.registerEvent(this.app.vault.on("delete", onVaultChange));
+      this.registerEvent(this.app.vault.on("create", () => this.refreshContentView()));
+      this.registerEvent(
+        this.app.vault.on("delete", (file) => {
+          this.pruneEditHistory(file.path);
+          this.refreshContentView();
+        })
+      );
       this.registerEvent(
         this.app.vault.on("rename", (file, oldPath) => {
           this.handlePathRename(oldPath, file.path);
           this.refreshContentView();
+          this.refreshEditView();
         })
       );
     });
@@ -372,10 +559,15 @@ export default class RecentViewPlugin extends Plugin {
     // already saved them (and the workspace may be torn down by now), so skip
     // re-capturing to avoid wiping the saved tabs with an empty set.
     if (!this.unloading) this.saveActiveProjectTabs(true);
+    if (this.editSaveTimer !== null) {
+      window.clearTimeout(this.editSaveTimer);
+      this.editSaveTimer = null;
+    }
     if (this.noteWriteTimer !== null) {
       window.clearTimeout(this.noteWriteTimer);
       this.noteWriteTimer = null;
     }
+    void this.saveSettings();
     void this.writeDataNote();
   }
 
@@ -386,14 +578,32 @@ export default class RecentViewPlugin extends Plugin {
    */
   async loadAll(): Promise<void> {
     const stored = ((await this.loadData()) ?? {}) as Partial<
-      RecentViewSettings & RecentViewData
+      RecentViewSettings & RecentViewData & { editHistory: EditRecord[] }
     >;
     this.settings = {
       dataNotePath: stored.dataNotePath || DEFAULT_SETTINGS.dataNotePath,
+      closePanesOnSwitch: stored.closePanesOnSwitch ?? DEFAULT_SETTINGS.closePanesOnSwitch,
+      editHistorySize:
+        typeof stored.editHistorySize === "number" && stored.editHistorySize > 0
+          ? Math.floor(stored.editHistorySize)
+          : DEFAULT_EDIT_HISTORY,
+      trackWhitespaceEdits:
+        stored.trackWhitespaceEdits ?? DEFAULT_SETTINGS.trackWhitespaceEdits,
       gdriveClientId: stored.gdriveClientId ?? "",
       gdriveClientSecret: stored.gdriveClientSecret ?? "",
       gdriveRefreshToken: stored.gdriveRefreshToken ?? "",
     };
+    this.editHistory = Array.isArray(stored.editHistory)
+      ? stored.editHistory
+          .filter(
+            (r): r is EditRecord =>
+              !!r && typeof r.path === "string" && typeof r.line === "number"
+          )
+          .map((r) => ({ ...r, kind: r.kind ?? "modify", lastLine: r.lastLine ?? r.line }))
+      : [];
+    if (this.editHistory.length > this.editHistoryLimit()) {
+      this.editHistory.length = this.editHistoryLimit();
+    }
 
     let fromNote = await this.readDataNote();
     let needsWrite = false;
@@ -471,7 +681,7 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.saveData({ ...this.settings, editHistory: this.editHistory });
   }
 
   /**
@@ -552,6 +762,87 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /**
+   * Create an untitled note in the given folder, open it, and — if the folder
+   * isn't already covered by a project folder — add the note to project.notes
+   * so it appears in the right pane. When paneId is provided the note is
+   * opened in that pane instead of the currently active one.
+   */
+  async createNoteForProject(
+    project: Project,
+    folder: TFolder,
+    paneId?: string | null
+  ): Promise<void> {
+    const base = "Untitled";
+    const dir = folder.path === "/" ? "" : folder.path;
+    let path = dir ? `${dir}/${base}.md` : `${base}.md`;
+    let i = 1;
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      path = dir ? `${dir}/${base} ${i}.md` : `${base} ${i}.md`;
+      i++;
+    }
+    try {
+      const file = await this.app.vault.create(path, "");
+      const insideProjectFolder = project.folders.some(
+        (fp) => file.path === fp || file.path.startsWith(fp + "/")
+      );
+      if (!insideProjectFolder && !project.notes.includes(file.path)) {
+        project.notes.push(file.path);
+        await this.persistNow();
+        this.refreshContentView();
+      }
+      if (paneId !== undefined) {
+        await this.showPane(project, paneId);
+      }
+      this.focusActiveGroup();
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(file);
+      window.setTimeout(() => {
+        const titleEl = leaf.view.containerEl.querySelector<HTMLElement>(
+          ".inline-title"
+        );
+        if (titleEl) {
+          titleEl.focus();
+          document.getSelection()?.selectAllChildren(titleEl);
+        }
+      }, 50);
+    } catch (e) {
+      new Notice(`Couldn't create note: ${(e as Error).message}`);
+    }
+  }
+
+  /** Create a new folder inside parentFolder with the given name.
+   *  If a project is given and the new folder falls outside its existing
+   *  folders, add it to project.folders so it appears in the right pane. */
+  async createFolder(parentFolder: TFolder, name: string, project?: Project): Promise<void> {
+    const sanitized = name.trim().replace(/[\\:*?"<>|]/g, "_");
+    if (!sanitized) {
+      new Notice("Folder name is required.");
+      return;
+    }
+    const dir = parentFolder.path === "/" ? "" : parentFolder.path;
+    const path = dir ? `${dir}/${sanitized}` : sanitized;
+    if (this.app.vault.getAbstractFileByPath(path)) {
+      new Notice(`Folder "${sanitized}" already exists.`);
+      return;
+    }
+    try {
+      await this.app.vault.createFolder(path);
+      if (project) {
+        const insideProjectFolder = project.folders.some(
+          (fp) => path === fp || path.startsWith(fp + "/")
+        );
+        if (!insideProjectFolder && !project.folders.includes(path)) {
+          project.folders.push(path);
+          await this.persistNow();
+          this.refreshContentView();
+        }
+      }
+    } catch (e) {
+      new Notice(`Couldn't create folder: ${(e as Error).message}`);
+    }
+  }
+
   async addFolderToProject(project: Project, folder: TFolder): Promise<void> {
     if (!project.folders.includes(folder.path)) {
       project.folders.push(folder.path);
@@ -597,6 +888,10 @@ export default class RecentViewPlugin extends Plugin {
         pane.lastClosedNotes = remapNotes(pane.lastClosedNotes ?? []);
       }
     }
+    this.editHistory = this.editHistory.map((r) => ({
+      ...r,
+      path: track(r.path, remap(r.path)),
+    }));
     if (changed) void this.persist();
   }
 
@@ -650,15 +945,307 @@ export default class RecentViewPlugin extends Plugin {
     const fileExplorer = workspace.getLeavesOfType("file-explorer")[0];
     if (!fileExplorer) {
       void this.activateListView();
+      void this.activateEditsView();
       return;
     }
     for (const l of workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)) {
       l.detach();
     }
-    const leaf = workspace.createLeafBySplit(fileExplorer, "horizontal", true);
-    void leaf
+    for (const l of workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS)) {
+      l.detach();
+    }
+    // Projects list directly above the file explorer.
+    const listLeaf = workspace.createLeafBySplit(fileExplorer, "horizontal", true);
+    // Recent edits as a sibling tab in the SAME group as the Projects list.
+    const parent = listLeaf.parent as unknown as WorkspaceSplit;
+    const editsLeaf = workspace.createLeafInParent(parent, 1);
+    void editsLeaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: false });
+    // Show the Projects pane as the active tab at startup.
+    void listLeaf
       .setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true })
-      .then(() => workspace.revealLeaf(leaf));
+      .then(() => workspace.revealLeaf(listLeaf));
+  }
+
+  async activateEditsView(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS)[0];
+    if (!leaf) {
+      // Add it as a sibling tab in the Projects list's group when that exists,
+      // otherwise just open a left-sidebar leaf.
+      const listLeaf = workspace.getLeavesOfType(VIEW_TYPE_PROJECT_LIST)[0];
+      if (listLeaf) {
+        const parent = listLeaf.parent as unknown as WorkspaceSplit;
+        leaf = workspace.createLeafInParent(parent, 1);
+      } else {
+        const left = workspace.getLeftLeaf(false);
+        if (!left) return;
+        leaf = left;
+      }
+      await leaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: true });
+    }
+    workspace.revealLeaf(leaf);
+  }
+
+  refreshEditView(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS)) {
+      if (leaf.view instanceof RecentEditsView) leaf.view.render();
+    }
+  }
+
+  private editHistoryLimit(): number {
+    const n = Math.floor(this.settings.editHistorySize);
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_EDIT_HISTORY;
+  }
+
+  private activeMarkdownEditor(): Editor | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    return view ? view.editor : null;
+  }
+
+  /** Snapshot the document on open; resume the live edit if it's this note's. */
+  private setEditBaseline(file: TFile | null): void {
+    if (!file || file.path === this.settings.dataNotePath) {
+      this.editBaselinePath = null;
+      this.lastEditDoc = "";
+      this.editRegionActive = false;
+      return;
+    }
+    const editor = this.activeMarkdownEditor();
+    this.editBaselinePath = file.path;
+    this.lastEditDoc = editor ? editor.getValue() : "";
+    // Continue the same edit if the top row is this note's tracked live region
+    // (e.g. after switching to another tab and back), so an adjacent edit merges.
+    const top = this.editHistory[0];
+    this.editRegionActive =
+      !!top && top.path === file.path && this.editBaselineByRecord.has(top);
+  }
+
+  /**
+   * Record an edit live. Line adjacency — not time — separates edits: changes on
+   * a line within (or next to) the live edit's range extend it; a change on a
+   * non-adjacent line starts a new edit.
+   */
+  private onEditorChange(editor: Editor, file: TFile): void {
+    // Ignore edits to the plugin's own data note.
+    if (file.path === this.settings.dataNotePath) return;
+    const current = editor.getValue();
+    const cursor = editor.getCursor();
+    const line = cursor.line;
+    const top = this.editHistory[0];
+    const sameNote = !!top && top.path === file.path;
+    const lo = top ? Math.min(top.line, top.lastLine) : 0;
+    const hi = top ? Math.max(top.line, top.lastLine) : 0;
+    const adjacent = sameNote && line >= lo - 1 && line <= hi + 1;
+
+    // Switched to a different file than last tracked (e.g. a tab switch where no
+    // event refreshed the baseline). Resume this note's live edit when the change
+    // is adjacent; otherwise snapshot and wait (we lack the pre-change document).
+    if (this.editBaselinePath !== file.path) {
+      this.editBaselinePath = file.path;
+      this.lastEditDoc = current;
+      const canResume =
+        !!top && sameNote && adjacent && this.editBaselineByRecord.has(top);
+      this.editRegionActive = canResume;
+      if (!canResume) return;
+    }
+
+    // Extend the live edit only while it's active and on an adjacent line.
+    const extend = !!top && this.editRegionActive && sameNote && adjacent;
+
+    // Baseline: an extended edit keeps its original starting document (so the
+    // edit stays "the same" across tab switches); a new edit starts from the
+    // document just before this change.
+    const baseline = extend
+      ? this.editBaselineByRecord.get(top!) ?? this.lastEditDoc
+      : this.lastEditDoc;
+
+    // Categorize the single edit by its net change: where it started (its
+    // baseline) vs the finished version (current).
+    const { added, removed, start, endNew } = diffEdit(baseline, current);
+    if (!added && !removed) {
+      this.lastEditDoc = current;
+      // The edit was undone back to its starting version (e.g. added a line then
+      // deleted it): drop the now-cancelled live row.
+      if (this.editRegionActive && this.editHistory.length > 0) {
+        this.editHistory.shift();
+        this.editRegionActive = false;
+        this.refreshEditView();
+        this.scheduleEditSave();
+      }
+      return;
+    }
+    // Whitespace-only changes are recorded only when the setting is enabled.
+    const hasText = /\S/.test(added) || /\S/.test(removed);
+    if (!hasText && !this.settings.trackWhitespaceEdits) {
+      this.lastEditDoc = current;
+      return;
+    }
+    let kind: EditKind;
+    let raw: string;
+    if (added && removed) {
+      kind = "modify";
+      raw = added;
+    } else if (removed) {
+      kind = "delete";
+      raw = removed;
+    } else {
+      kind = "add";
+      raw = added;
+    }
+    const text = editSnippet(raw);
+    const now = Date.now();
+    // Exact range of the added/modified text in the current document, so a click
+    // can select all of it (across lines). Deletions have no remaining text.
+    let sel: EditSel | undefined;
+    if (kind !== "delete") {
+      const fromPos = editor.offsetToPos(start);
+      const toPos = editor.offsetToPos(endNew);
+      sel = {
+        fromLine: fromPos.line,
+        fromCh: fromPos.ch,
+        toLine: toPos.line,
+        toCh: toPos.ch,
+      };
+    }
+
+    if (extend && top) {
+      // Update the live edit in place (delta recomputed from its baseline).
+      top.text = text;
+      top.kind = kind;
+      top.line = Math.min(lo, line);
+      top.lastLine = Math.max(hi, line);
+      top.ch = cursor.ch;
+      top.time = now;
+      top.sel = sel;
+    } else if (top && sameNote && top.text === text) {
+      // Neighbouring edit with the same selected text: merge, moving the row to
+      // this spot and making it the live edit again.
+      top.line = line;
+      top.lastLine = line;
+      top.ch = cursor.ch;
+      top.time = now;
+      top.sel = sel;
+      if (top.kind !== kind) top.kind = "modify";
+      this.editRegionActive = true;
+      this.editBaselineByRecord.set(top, baseline);
+    } else {
+      const record: EditRecord = {
+        path: file.path,
+        text,
+        kind,
+        line,
+        lastLine: line,
+        ch: cursor.ch,
+        time: now,
+        sel,
+      };
+      this.pushEdit(record);
+      this.editRegionActive = true;
+      this.editBaselineByRecord.set(record, baseline);
+    }
+    this.lastEditDoc = current;
+    this.refreshEditView();
+    this.scheduleEditSave();
+  }
+
+  /** Add an edit as its own row at the top (notes may appear multiple times). */
+  private pushEdit(edit: EditRecord): void {
+    this.editHistory.unshift(edit);
+    const max = this.editHistoryLimit();
+    if (this.editHistory.length > max) this.editHistory.length = max;
+  }
+
+  private scheduleEditSave(): void {
+    if (this.editSaveTimer !== null) window.clearTimeout(this.editSaveTimer);
+    this.editSaveTimer = window.setTimeout(() => {
+      this.editSaveTimer = null;
+      void this.saveSettings();
+    }, 1500);
+  }
+
+  /** Drop history entries for a deleted file (and its descendants). */
+  private pruneEditHistory(deletedPath: string): void {
+    const before = this.editHistory.length;
+    this.editHistory = this.editHistory.filter(
+      (r) => r.path !== deletedPath && !r.path.startsWith(deletedPath + "/")
+    );
+    if (this.editHistory.length !== before) {
+      this.refreshEditView();
+      void this.saveSettings();
+    }
+  }
+
+  async clearEditHistory(): Promise<void> {
+    this.editHistory = [];
+    this.editRegionActive = false;
+    this.refreshEditView();
+    await this.saveSettings();
+  }
+
+  /** Open the note for an edit and select + center the edited line. */
+  async openEditRecord(record: EditRecord): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(record.path);
+    if (!(file instanceof TFile)) {
+      new Notice("That note no longer exists.");
+      this.pruneEditHistory(record.path);
+      return;
+    }
+    const { workspace } = this.app;
+    const group = this.getActiveGroup();
+    // Reuse an existing tab for this file in the active pane, else open one.
+    let existing: WorkspaceLeaf | null = null;
+    if (group) {
+      workspace.iterateRootLeaves((l) => {
+        if (
+          !existing &&
+          this.leafInGroup(l, group) &&
+          l.getViewState().state?.file === file.path
+        ) {
+          existing = l;
+        }
+      });
+    }
+    let leaf: WorkspaceLeaf;
+    if (existing) {
+      leaf = existing;
+      workspace.setActiveLeaf(leaf, { focus: true });
+    } else {
+      if (group) this.focusActiveGroup();
+      leaf = workspace.getLeaf("tab");
+      await leaf.openFile(file);
+    }
+    this.revealEditInLeaf(leaf, record);
+  }
+
+  /** Scroll to the edit, centered. Selects the whole added/modified text range;
+   *  a deletion just places the cursor (its text is gone, nothing to select). */
+  private revealEditInLeaf(leaf: WorkspaceLeaf, record: EditRecord): void {
+    window.setTimeout(() => {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) return;
+      const editor = view.editor;
+      const lastLine = editor.lastLine();
+      const clamp = (ln: number, ch: number) => {
+        const l = Math.min(Math.max(ln, 0), lastLine);
+        return { line: l, ch: Math.min(Math.max(ch, 0), editor.getLine(l).length) };
+      };
+      if (record.kind === "delete") {
+        const pos = clamp(record.line, 0);
+        editor.setCursor(pos);
+        editor.scrollIntoView({ from: pos, to: pos }, true);
+      } else {
+        // Use the exact added/modified range when available, else the line.
+        const from = record.sel
+          ? clamp(record.sel.fromLine, record.sel.fromCh)
+          : clamp(record.line, 0);
+        const to = record.sel
+          ? clamp(record.sel.toLine, record.sel.toCh)
+          : clamp(record.line, editor.getLine(clamp(record.line, 0).line).length);
+        editor.setSelection(from, to);
+        editor.scrollIntoView({ from, to }, true);
+      }
+      editor.focus();
+    }, 60);
   }
 
   async activateContentView(): Promise<void> {
@@ -690,6 +1277,17 @@ export default class RecentViewPlugin extends Plugin {
       VIEW_TYPE_PROJECT_CONTENT
     )) {
       if (leaf.view instanceof ProjectContentView) leaf.view.render();
+    }
+  }
+
+  /** Scroll the right pane to the item for `path` (no-op if not rendered). */
+  scrollToFileInContentView(path: string): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(
+      VIEW_TYPE_PROJECT_CONTENT
+    )) {
+      if (leaf.view instanceof ProjectContentView) {
+        leaf.view.scrollToFile(path);
+      }
     }
   }
 
@@ -758,6 +1356,47 @@ export default class RecentViewPlugin extends Plugin {
       if (!this.leafInGroup(leaf, group)) stray.push(leaf);
     });
     for (const leaf of stray) leaf.detach();
+
+    // Obsidian's async workspace restoration can inject leaves into the only
+    // surviving group after we already rebuilt it, causing:
+    //   (a) duplicate tabs  — same file opened twice, and
+    //   (b) foreign tabs    — files from other projects/panes.
+    // Both also corrupt tab order because the injected leaves can land between
+    // the ones we opened. Fix by keeping ONLY the exact leaf objects we opened
+    // (by identity), which preserves their original positions and order.
+    const toKeep = this._startupOpenedLeaves
+      ? new Set(this._startupOpenedLeaves)
+      : null;
+    this._startupOpenedLeaves = null;
+
+    if (toKeep !== null) {
+      const toRemove: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (!this.leafInGroup(leaf, group)) return;
+        if (!toKeep.has(leaf)) toRemove.push(leaf);
+      });
+      for (const leaf of toRemove) leaf.detach();
+    } else {
+      // Fallback (no startup tracking info): remove foreign paths and dupes.
+      const project = this.getActiveProject();
+      const paneId = project?.activePaneId ?? null;
+      const expectedPaths = project
+        ? new Set(this.resolveNotes(this.paneNotes(project, paneId)).map((n) => n.file.path))
+        : null;
+      const seenPaths = new Set<string>();
+      const toRemove: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => {
+        if (!this.leafInGroup(leaf, group)) return;
+        const path = leaf.getViewState().state?.file;
+        if (typeof path !== "string") return;
+        if ((expectedPaths && !expectedPaths.has(path)) || seenPaths.has(path)) {
+          toRemove.push(leaf);
+        } else {
+          seenPaths.add(path);
+        }
+      });
+      for (const leaf of toRemove) leaf.detach();
+    }
   }
 
   private async settleStartupInner(): Promise<void> {
@@ -780,6 +1419,7 @@ export default class RecentViewPlugin extends Plugin {
     const notes = this.resolveNotes(this.paneNotes(active, paneId));
     if (notes.length === 0) {
       await keep.setViewState({ type: "empty" });
+      this._startupOpenedLeaves = [keep];
     } else {
       const opened: WorkspaceLeaf[] = [];
       let first = true;
@@ -789,7 +1429,10 @@ export default class RecentViewPlugin extends Plugin {
           leaf = keep;
           first = false;
         } else {
-          ws.setActiveLeaf(keep, { focus: false });
+          // Anchor off the previous leaf, not keep. Whether getLeaf("tab")
+          // inserts after the active tab or at the end of the group, this
+          // guarantees tabs appear in the saved order.
+          ws.setActiveLeaf(opened[opened.length - 1], { focus: false });
           leaf = ws.getLeaf("tab");
         }
         await leaf.openFile(note.file, { eState: note.eState });
@@ -797,6 +1440,7 @@ export default class RecentViewPlugin extends Plugin {
       }
       const activeIdx = notes.findIndex((n) => n.active);
       ws.setActiveLeaf(opened[activeIdx >= 0 ? activeIdx : 0], { focus: true });
+      this._startupOpenedLeaves = opened;
     }
 
     this.applyGroupVisibility(this.paneKey(active.id, paneId));
@@ -896,6 +1540,28 @@ export default class RecentViewPlugin extends Plugin {
    * create) this one's tab group.
    */
   async showPane(project: Project, paneId: string | null): Promise<void> {
+    // Bump the generation NOW (synchronously) so any in-flight build sees it
+    // and aborts at its next checkpoint instead of finishing the old project.
+    const gen = ++this._showPaneGen;
+    // Serialize switches: a rapid second click waits for the in-flight switch
+    // to finish aborting rather than running concurrently. Concurrent runs
+    // would each call createPaneGroup and leave two panes side by side.
+    this._pendingSwitches++;
+    const run = this._switchQueue
+      .catch(() => {})
+      .then(() => this.showPaneImpl(project, paneId, gen))
+      .finally(() => {
+        this._pendingSwitches--;
+      });
+    this._switchQueue = run;
+    return run;
+  }
+
+  private async showPaneImpl(
+    project: Project,
+    paneId: string | null,
+    gen: number
+  ): Promise<void> {
     // Snapshot the currently visible pane before switching away.
     this.saveActiveProjectTabs();
 
@@ -908,30 +1574,65 @@ export default class RecentViewPlugin extends Plugin {
     void this.activateContentView();
 
     const key = this.paneKey(project.id, paneId);
+    const rootEl = (
+      this.app.workspace.rootSplit as unknown as { containerEl?: HTMLElement }
+    ).containerEl;
     try {
       let group = this.getLiveGroup(key);
-      if (!group) group = await this.createPaneGroup(project, paneId);
+      if (!group) {
+        // Hide the root while building so the new split never appears alongside
+        // the current pane during the async openFile sequence.
+        if (rootEl) rootEl.style.visibility = "hidden";
+        group = await this.createPaneGroup(project, paneId, gen);
+      }
+      // A newer click arrived while we were building; createPaneGroup already
+      // tore down its partial work. Stop here and let that switch take over
+      // (leaving the root hidden so it can finish without a flash).
+      if (gen !== this._showPaneGen) return;
       if (group) {
         this.projectGroups.set(key, group);
-        this.applyGroupVisibility(key);
         this.focusGroup(group);
+        if (this.settings.closePanesOnSwitch) {
+          // Close all other pane groups now that the new group is established.
+          // Closing AFTER createPaneGroup lets it anchor the split position
+          // off existing groups, so the new group lands in the root split.
+          for (const [k, otherGroup] of [...this.projectGroups]) {
+            if (k === key) continue;
+            const toClose: WorkspaceLeaf[] = [];
+            this.app.workspace.iterateRootLeaves((leaf) => {
+              if (this.leafInGroup(leaf, otherGroup)) toClose.push(leaf);
+            });
+            for (const leaf of toClose) leaf.detach();
+            this.projectGroups.delete(k);
+          }
+        } else {
+          // Keep panes alive: hide inactive groups with CSS for instant switching.
+          this.applyGroupVisibility(key);
+        }
       }
     } catch (e) {
       console.error("[RecentView] failed to open pane", e);
+    } finally {
+      // Only reveal the root if this switch is still the latest; a superseding
+      // switch keeps it hidden and reveals it once it finishes.
+      if (gen === this._showPaneGen && rootEl) rootEl.style.visibility = "";
     }
 
     await this.persist();
 
-    // Release the guard after the layout settles.
+    // Release the guard after the layout settles, but only once no further
+    // switch is queued — otherwise a stale timer would re-enable layout
+    // handling in the middle of the next switch.
     window.setTimeout(() => {
-      this.isActivating = false;
+      if (this._pendingSwitches === 0) this.isActivating = false;
     }, 150);
   }
 
   /** Build a new tab group for a pane from its saved notes. */
   private async createPaneGroup(
     project: Project,
-    paneId: string | null
+    paneId: string | null,
+    gen: number
   ): Promise<WorkspaceParent | null> {
     const notes = this.resolveNotes(this.paneNotes(project, paneId));
     const { workspace } = this.app;
@@ -963,9 +1664,21 @@ export default class RecentViewPlugin extends Plugin {
     const opened: WorkspaceLeaf[] = [firstLeaf];
     await firstLeaf.openFile(notes[0].file, { eState: notes[0].eState });
     for (let i = 1; i < notes.length; i++) {
+      // A newer switch was requested: stop building, tear down what we opened
+      // so no half-built pane lingers, and signal the caller to abort.
+      if (gen !== this._showPaneGen) {
+        for (const leaf of opened) leaf.detach();
+        return null;
+      }
+      workspace.setActiveLeaf(opened[opened.length - 1], { focus: false });
       const leaf = workspace.getLeaf("tab");
       await leaf.openFile(notes[i].file, { eState: notes[i].eState });
       opened.push(leaf);
+    }
+    // One last check before we commit the finished group.
+    if (gen !== this._showPaneGen) {
+      for (const leaf of opened) leaf.detach();
+      return null;
     }
     const activeIndex = notes.findIndex((n) => n.active);
     workspace.setActiveLeaf(opened[activeIndex >= 0 ? activeIndex : 0], {
@@ -1544,6 +2257,52 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /**
+   * Close a tab showing `file` in the currently active pane and reopen it in
+   * `targetPaneId`. If `sourceLeaf` is provided (from the tab right-click
+   * event) that exact leaf is detached; otherwise every leaf for that file in
+   * the current pane is closed.
+   */
+  async moveTabToPane(
+    project: Project,
+    file: TFile,
+    sourceLeaf: WorkspaceLeaf | null,
+    targetPaneId: string | null
+  ): Promise<void> {
+    const sourcePaneId = project.activePaneId ?? null;
+    if (sourcePaneId === targetPaneId) return;
+
+    // Detach the leaf while blocking onLayoutChange so removing the tab
+    // doesn't trigger a full pane rebuild.
+    this.isActivating = true;
+    try {
+      if (sourceLeaf) {
+        sourceLeaf.detach();
+      } else {
+        const group = this.getLiveGroup(this.paneKey(project.id, sourcePaneId));
+        if (group) {
+          const toClose: WorkspaceLeaf[] = [];
+          this.app.workspace.iterateRootLeaves((leaf) => {
+            if (
+              this.leafInGroup(leaf, group) &&
+              leaf.getViewState().state?.file === file.path
+            ) {
+              toClose.push(leaf);
+            }
+          });
+          for (const leaf of toClose) leaf.detach();
+        }
+      }
+    } finally {
+      this.isActivating = false;
+    }
+
+    // Switch to the target pane and open the file there.  saveActiveProjectTabs
+    // runs inside showPane before the switch, at which point the detached leaf
+    // is already gone — so the source pane's saved tab list is clean.
+    await this.openNoteInPane(project, targetPaneId, file);
+  }
+
   /** Upload a single file to its matching place in the project's Drive folder. */
   async uploadFileToDrive(project: Project, file: TFile): Promise<void> {
     if (!isDesktop()) {
@@ -1746,6 +2505,179 @@ class ProjectListView extends ItemView {
   }
 }
 
+/**
+ * Diff `oldStr` -> `newStr` by trimming the shared prefix and suffix, returning
+ * the inserted text (`added`) and the removed text (`removed`).
+ */
+function diffEdit(
+  oldStr: string,
+  newStr: string
+): { added: string; removed: string; start: number; endOld: number; endNew: number } {
+  let start = 0;
+  const minLen = Math.min(oldStr.length, newStr.length);
+  while (start < minLen && oldStr[start] === newStr[start]) start++;
+  let endOld = oldStr.length;
+  let endNew = newStr.length;
+  while (
+    endOld > start &&
+    endNew > start &&
+    oldStr[endOld - 1] === newStr[endNew - 1]
+  ) {
+    endOld--;
+    endNew--;
+  }
+  return {
+    added: newStr.slice(start, endNew),
+    removed: oldStr.slice(start, endOld),
+    start,
+    endOld,
+    endNew,
+  };
+}
+
+const EDIT_KIND_LABEL: Record<EditKind, string> = {
+  add: "Added",
+  delete: "Deleted",
+  modify: "Modified",
+};
+
+/** A short display snippet for an edit, describing whitespace-only changes. */
+function editSnippet(raw: string): string {
+  const collapsed = raw.replace(/\s+/g, " ").trim();
+  if (collapsed) return collapsed.slice(0, 200);
+  if (/\n/.test(raw)) return raw.replace(/[^\n]/g, "").length > 1 ? "(blank lines)" : "(new line)";
+  if (raw.length) return "(whitespace)";
+  return "(empty)";
+}
+
+/** Compact "time ago" label (with the absolute time available as a tooltip). */
+function formatRelativeTime(time: number): string {
+  const diff = Date.now() - time;
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(time).toLocaleDateString();
+}
+
+class RecentEditsView extends ItemView {
+  plugin: RecentViewPlugin;
+
+  constructor(leaf: WorkspaceLeaf, plugin: RecentViewPlugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
+
+  getViewType(): string {
+    return VIEW_TYPE_RECENT_EDITS;
+  }
+
+  getDisplayText(): string {
+    return "Recent edits";
+  }
+
+  getIcon(): string {
+    return "history";
+  }
+
+  async onOpen(): Promise<void> {
+    this.render();
+  }
+
+  render(): void {
+    const c = this.contentEl;
+    c.empty();
+    c.addClass("recent-view-edits");
+
+    const header = c.createDiv({ cls: "rv-header" });
+    const titleWrap = header.createDiv({ cls: "rv-header-title-wrap" });
+    titleWrap.createEl("span", { cls: "rv-header-title", text: "Recent edits" });
+
+    const menuBtn = titleWrap.createEl("button", {
+      cls: "rv-icon-btn rv-header-menu",
+    });
+    setIcon(menuBtn, "more-vertical");
+    menuBtn.setAttribute("aria-label", "Recent edits options");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Refresh")
+          .setIcon("refresh-cw")
+          .onClick(() => this.render())
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Clear history")
+          .setIcon("trash-2")
+          .setDisabled(this.plugin.editHistory.length === 0)
+          .onClick(() => void this.plugin.clearEditHistory())
+      );
+      showMenu(menu, e, this.contentEl, menuBtn);
+    };
+
+    const list = c.createDiv({ cls: "rv-edit-list" });
+    if (this.plugin.editHistory.length === 0) {
+      list.createDiv({
+        cls: "rv-empty",
+        text: "No recent edits yet. Notes you edit will appear here.",
+      });
+      return;
+    }
+    for (const record of this.plugin.editHistory) {
+      this.renderEditBox(list, record);
+    }
+  }
+
+  private renderEditBox(container: HTMLElement, record: EditRecord): void {
+    const file = this.plugin.app.vault.getAbstractFileByPath(record.path);
+    const box = container.createDiv({ cls: "rv-edit-box" });
+    box.setAttribute("aria-label", "Open at this edit");
+    if (!(file instanceof TFile)) box.addClass("rv-edit-missing");
+
+    const name =
+      file instanceof TFile
+        ? file.basename
+        : (record.path.split("/").pop() ?? record.path).replace(/\.md$/, "");
+    const folder =
+      file instanceof TFile
+        ? file.parent && file.parent.path !== "/"
+          ? file.parent.path
+          : "/"
+        : record.path.split("/").slice(0, -1).join("/") || "/";
+
+    const textRow = box.createDiv({ cls: "rv-edit-text-row" });
+    textRow.createSpan({
+      cls: `rv-edit-kind rv-edit-kind-${record.kind}`,
+      text: EDIT_KIND_LABEL[record.kind] ?? "Edited",
+    });
+    const textEl = textRow.createSpan({
+      cls: "rv-edit-text",
+      text: record.text || "(empty)",
+    });
+    if (record.kind === "delete") textEl.addClass("rv-edit-deleted");
+
+    const nameRow = box.createDiv({ cls: "rv-edit-name-row" });
+    setIcon(nameRow.createSpan({ cls: "rv-edit-icon" }), "file-text");
+    nameRow.createSpan({ cls: "rv-edit-name", text: name });
+
+    const meta = box.createDiv({ cls: "rv-edit-meta" });
+    meta.createSpan({ cls: "rv-edit-folder", text: folder });
+    const time = meta.createSpan({
+      cls: "rv-edit-time",
+      text: formatRelativeTime(record.time),
+    });
+    time.setAttribute("title", new Date(record.time).toLocaleString());
+
+    box.onclick = () => void this.plugin.openEditRecord(record);
+  }
+}
+
 class ProjectContentView extends ItemView {
   plugin: RecentViewPlugin;
   private reordering = false;
@@ -1794,8 +2726,63 @@ class ProjectContentView extends ItemView {
       if (project) {
         menu.addItem((item) =>
           item
+            .setTitle("New note…")
+            .setIcon("file-plus")
+            .onClick(() => {
+              const root = this.plugin.app.vault.getRoot();
+              const projectFolders = this.plugin.projectFolders(project);
+              new FolderSuggestModal(
+                this.plugin.app,
+                (folder) => void this.plugin.createNoteForProject(project, folder),
+                [root, ...projectFolders]
+              ).open();
+            })
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("New folder…")
+            .setIcon("folder-plus")
+            .onClick(() => {
+              const root = this.plugin.app.vault.getRoot();
+              const projectFolders = this.plugin.projectFolders(project);
+              new FolderSuggestModal(
+                this.plugin.app,
+                (parentFolder) =>
+                  new PromptModal(
+                    this.plugin.app,
+                    "New folder",
+                    "",
+                    (name) => void this.plugin.createFolder(parentFolder, name, project)
+                  ).open(),
+                [root, ...projectFolders]
+              ).open();
+            })
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add note to project…")
+            .setIcon("file-search")
+            .onClick(() =>
+              new FileSuggestModal(this.plugin.app, (file) =>
+                void this.plugin.addNoteToProject(project, file)
+              ).open()
+            )
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Add folder to project…")
+            .setIcon("folder-plus")
+            .onClick(() =>
+              new FolderSuggestModal(this.plugin.app, (folder) =>
+                void this.plugin.addFolderToProject(project, folder)
+              ).open()
+            )
+        );
+        menu.addSeparator();
+        menu.addItem((item) =>
+          item
             .setTitle("New pane")
-            .setIcon("plus")
+            .setIcon("layout-panel-left")
             .onClick(() =>
               new PromptModal(
                 this.plugin.app,
@@ -1889,6 +2876,19 @@ class ProjectContentView extends ItemView {
       this.reordering = false;
     }
 
+    if (project.notes.length > 0) {
+      const section = c.createDiv({ cls: "rv-folder-section" });
+      const head = section.createDiv({ cls: "rv-folder-head" });
+      setIcon(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
+      head.createSpan({ text: "Notes" });
+      const fileList = section.createDiv({ cls: "rv-file-list" });
+      const looseNotes = project.notes
+        .map((path) => this.plugin.app.vault.getAbstractFileByPath(path))
+        .filter((f): f is TFile => f instanceof TFile)
+        .sort((a, b) => a.basename.localeCompare(b.basename));
+      for (const file of looseNotes) this.renderFileItem(fileList, file);
+    }
+
     for (const folderPath of project.folders) {
       const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
       if (folder instanceof TFolder) {
@@ -1920,19 +2920,6 @@ class ProjectContentView extends ItemView {
       }
     }
 
-    if (project.notes.length > 0) {
-      const section = c.createDiv({ cls: "rv-folder-section" });
-      const head = section.createDiv({ cls: "rv-folder-head" });
-      setIcon(head.createSpan({ cls: "rv-folder-icon" }), "file-text");
-      head.createSpan({ text: "Notes" });
-      const fileList = section.createDiv({ cls: "rv-file-list" });
-      const looseNotes = project.notes
-        .map((path) => this.plugin.app.vault.getAbstractFileByPath(path))
-        .filter((f): f is TFile => f instanceof TFile)
-        .sort((a, b) => a.basename.localeCompare(b.basename));
-      for (const file of looseNotes) this.renderFileItem(fileList, file);
-    }
-
     this.updateOpenHighlights();
   }
 
@@ -1951,6 +2938,7 @@ class ProjectContentView extends ItemView {
         if (typeof p === "string") openPaths.add(p);
       });
     }
+
     this.contentEl
       .querySelectorAll<HTMLElement>(".rv-file-item[data-rv-path]")
       .forEach((el) => {
@@ -1958,6 +2946,19 @@ class ProjectContentView extends ItemView {
         el.toggleClass("is-open", path === activePath);
         el.toggleClass("is-tab-open", openPaths.has(path));
       });
+  }
+
+  /** Scroll the right pane to the item for `path`, if it is rendered. */
+  scrollToFile(path: string): void {
+    const items = this.contentEl.querySelectorAll<HTMLElement>(
+      ".rv-file-item[data-rv-path]"
+    );
+    for (const el of Array.from(items)) {
+      if (el.dataset.rvPath === path) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        break;
+      }
+    }
   }
 
   /** List the project's panes (main + named) when it has named panes. */
@@ -1979,6 +2980,19 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Add pane")
+          .setIcon("plus")
+          .onClick(() =>
+            new PromptModal(
+              this.plugin.app,
+              "New pane",
+              `Pane ${project.panes.length + 1}`,
+              (name) => void this.plugin.addPane(project, name)
+            ).open()
+          )
+      );
       menu.addItem((i) =>
         i
           .setTitle(this.panesReordering ? "Done reordering" : "Reorder panes")
@@ -2035,6 +3049,22 @@ class ProjectContentView extends ItemView {
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("New note…")
+          .setIcon("file-plus")
+          .onClick(() => {
+            const root = this.plugin.app.vault.getRoot();
+            const projectFolders = this.plugin.projectFolders(project);
+            new FolderSuggestModal(
+              this.plugin.app,
+              (folder) =>
+                void this.plugin.createNoteForProject(project, folder, paneId),
+              [root, ...projectFolders]
+            ).open();
+          })
+      );
+      menu.addSeparator();
       menu.addItem((i) =>
         i
           .setTitle("Open default tabs")
@@ -2232,6 +3262,21 @@ class ProjectContentView extends ItemView {
     }
   }
 
+  private async moveFileTo(file: TFile, folder: TFolder): Promise<void> {
+    const dir = folder.path === "/" ? "" : folder.path;
+    const newPath = dir ? `${dir}/${file.name}` : file.name;
+    if (newPath === file.path) return;
+    if (this.plugin.app.vault.getAbstractFileByPath(newPath)) {
+      new Notice(`"${file.name}" already exists in that folder.`);
+      return;
+    }
+    try {
+      await this.plugin.app.fileManager.renameFile(file, newPath);
+    } catch (e) {
+      new Notice(`Move failed: ${(e as Error).message}`);
+    }
+  }
+
   private showFileMenu(e: MouseEvent, file: TFile, btn: HTMLElement): void {
     const project = this.plugin.getActiveProject();
     const menu = new Menu();
@@ -2275,6 +3320,31 @@ class ProjectContentView extends ItemView {
         .setTitle("Rename")
         .setIcon("pencil")
         .onClick(() => new RenameModal(this.plugin.app, file).open())
+    );
+    if (project && project.folders.length > 0) {
+      menu.addItem((i) =>
+        i
+          .setTitle("Move to folder in project…")
+          .setIcon("folder-input")
+          .onClick(() =>
+            new FolderSuggestModal(
+              this.plugin.app,
+              (folder) => void this.moveFileTo(file, folder),
+              this.plugin.projectFolders(project)
+            ).open()
+          )
+      );
+    }
+    menu.addItem((i) =>
+      i
+        .setTitle("Move to folder in vault…")
+        .setIcon("folder-input")
+        .onClick(() =>
+          new FolderSuggestModal(
+            this.plugin.app,
+            (folder) => void this.moveFileTo(file, folder)
+          ).open()
+        )
     );
     if (project?.driveFolderId) {
       menu.addItem((i) =>
@@ -2930,6 +4000,61 @@ class RecentViewSettingTab extends PluginSettingTab {
             this.plugin.settings.dataNotePath = next;
             // Write the current data to the new location immediately.
             await this.plugin.persistNow();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Close inactive pane groups when switching projects")
+      .setDesc(
+        "When enabled, the previous project's tab group is closed after switching. " +
+          "This keeps the workspace as a single flat pane and avoids split-pane issues. " +
+          "When disabled, inactive groups are hidden with CSS so switching back is instant " +
+          "(but may cause tabs to appear in a split pane on some layouts)."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.closePanesOnSwitch)
+          .onChange(async (value) => {
+            this.plugin.settings.closePanesOnSwitch = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Recent edits to keep")
+      .setDesc(
+        "How many recently edited notes the Recent edits pane shows. Default 8."
+      )
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text
+          .setPlaceholder(String(DEFAULT_EDIT_HISTORY))
+          .setValue(String(this.plugin.settings.editHistorySize))
+          .onChange(async (value) => {
+            const n = parseInt(value, 10);
+            const next = Number.isFinite(n) && n > 0 ? n : DEFAULT_EDIT_HISTORY;
+            this.plugin.settings.editHistorySize = next;
+            if (this.plugin.editHistory.length > next) {
+              this.plugin.editHistory.length = next;
+            }
+            await this.plugin.saveSettings();
+            this.plugin.refreshEditView();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Track whitespace-only changes")
+      .setDesc(
+        "When enabled, edits that only add or remove whitespace (e.g. new lines, " +
+          "spaces) are recorded in the Recent edits pane too."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.trackWhitespaceEdits)
+          .onChange(async (value) => {
+            this.plugin.settings.trackWhitespaceEdits = value;
+            await this.plugin.saveSettings();
           })
       );
 

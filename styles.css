@@ -390,3 +390,129 @@
   gap: 8px;
   margin-top: 16px;
 }
+
+/* Recent edits view */
+
+.recent-view-edits .rv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 4px;
+  gap: 8px;
+}
+
+.rv-edit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.rv-edit-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.rv-edit-box:hover {
+  background: var(--background-modifier-hover);
+}
+
+.rv-edit-missing {
+  opacity: 0.5;
+}
+
+.rv-edit-text-row {
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.rv-edit-kind {
+  display: inline;
+  margin-right: 5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.rv-edit-kind-add {
+  color: var(--text-success);
+  background: rgba(var(--color-green-rgb), 0.15);
+}
+
+.rv-edit-kind-delete {
+  color: var(--text-error);
+  background: rgba(var(--color-red-rgb), 0.15);
+}
+
+.rv-edit-kind-modify {
+  color: var(--text-accent);
+  background: rgba(var(--color-accent-rgb), 0.15);
+}
+
+.rv-edit-text {
+  color: var(--text-normal);
+}
+
+.rv-edit-deleted {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.rv-edit-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rv-edit-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.rv-edit-name {
+  font-weight: 600;
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-edit-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.rv-edit-folder {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-edit-time {
+  flex-shrink: 0;
+}
