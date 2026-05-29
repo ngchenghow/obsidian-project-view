@@ -46,12 +46,18 @@ A project lives as a pane in the left sidebar; clicking it instantly restores th
 
 ---
 
-## Installation (manual)
+## Installation
 
-This plugin isn't in the community store. To install manually:
+### Community plugins store (recommended)
 
-1. Create the folder `<your-vault>/.obsidian/plugins/obsidian-project-view/`.
-2. Copy `manifest.json`, `main.js`, and `styles.css` into it.
+1. Open **Settings → Community plugins → Browse**.
+2. Search for **ProjectView**.
+3. Click **Install**, then **Enable**.
+
+### Manual
+
+1. Download `manifest.json`, `main.js`, and `styles.css` from the [latest release](https://github.com/ngchenghow/obsidian-project-view/releases/latest).
+2. Place them in `<your-vault>/.obsidian/plugins/obsidian-project-view/`.
 3. In Obsidian, enable **ProjectView** under **Settings → Community plugins**.
 
 ---
