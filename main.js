@@ -2440,12 +2440,14 @@ var ProjectListView = class extends import_obsidian2.ItemView {
           (item) => item.setTitle("Add note to project\u2026").setIcon("file-plus").onClick(
             () => new FileSuggestModal(
               this.plugin.app,
-              (file) => void this.plugin.addNoteToProject(project, file)
+              (file) => void this.plugin.addNoteToProject(project, file),
+              void 0,
+              new Set(this.plugin.projectFiles(project).map((f) => f.path))
             ).open()
           )
         );
-        if (this.plugin.drive.isConnected()) {
-          if (!project.driveFolderId) {
+        if (!project.driveFolderId) {
+          if (this.plugin.drive.isConfigured()) {
             menu.addItem(
               (item) => item.setTitle("Link to Google Drive folder").setIcon("link").onClick(
                 () => new DriveLinkModal(
@@ -2455,6 +2457,8 @@ var ProjectListView = class extends import_obsidian2.ItemView {
                 ).open()
               )
             );
+          }
+          if (this.plugin.drive.isConnected()) {
             menu.addItem(
               (item) => item.setTitle("Upload to Google Drive as new folder").setIcon("folder-up").onClick(
                 () => new DriveUploadAsNewModal(
@@ -2710,7 +2714,9 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
           (item) => item.setTitle("Add note to project\u2026").setIcon("file-search").onClick(
             () => new FileSuggestModal(
               this.plugin.app,
-              (file) => void this.plugin.addNoteToProject(project, file)
+              (file) => void this.plugin.addNoteToProject(project, file),
+              void 0,
+              new Set(this.plugin.projectFiles(project).map((f) => f.path))
             ).open()
           )
         );
@@ -2734,25 +2740,29 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
           )
         );
       }
-      if (project && this.plugin.drive.isConnected() && !project.driveFolderId) {
-        menu.addItem(
-          (item) => item.setTitle("Link to Google Drive folder").setIcon("link").onClick(
-            () => new DriveLinkModal(
-              this.plugin.app,
-              this.plugin,
-              project
-            ).open()
-          )
-        );
-        menu.addItem(
-          (item) => item.setTitle("Upload to Google Drive as new folder").setIcon("folder-up").onClick(
-            () => new DriveUploadAsNewModal(
-              this.plugin.app,
-              this.plugin,
-              project
-            ).open()
-          )
-        );
+      if (project && !project.driveFolderId) {
+        if (this.plugin.drive.isConfigured()) {
+          menu.addItem(
+            (item) => item.setTitle("Link to Google Drive folder").setIcon("link").onClick(
+              () => new DriveLinkModal(
+                this.plugin.app,
+                this.plugin,
+                project
+              ).open()
+            )
+          );
+        }
+        if (this.plugin.drive.isConnected()) {
+          menu.addItem(
+            (item) => item.setTitle("Upload to Google Drive as new folder").setIcon("folder-up").onClick(
+              () => new DriveUploadAsNewModal(
+                this.plugin.app,
+                this.plugin,
+                project
+              ).open()
+            )
+          );
+        }
       }
       if (project == null ? void 0 : project.driveFolderId) {
         menu.addItem(
@@ -3357,11 +3367,23 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
     });
     new import_obsidian2.Setting(contentEl).setName("Notes").setDesc("Specific notes included in this project").addButton(
       (b) => b.setButtonText("Add note").onClick(() => {
+        const covered = /* @__PURE__ */ new Set();
+        for (const fp of this.folders) {
+          const folder = this.app.vault.getAbstractFileByPath(fp);
+          if (folder instanceof import_obsidian2.TFolder) {
+            import_obsidian2.Vault.recurseChildren(folder, (f) => {
+              if (f instanceof import_obsidian2.TFile)
+                covered.add(f.path);
+            });
+          }
+        }
+        for (const p of this.notes)
+          covered.add(p);
         new FileSuggestModal(this.app, (file) => {
           if (!this.notes.includes(file.path))
             this.notes.push(file.path);
           this.renderForm();
-        }).open();
+        }, void 0, covered).open();
       })
     );
     this.renderChipList(contentEl, this.notes, (path) => {
@@ -3518,12 +3540,9 @@ var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   getItems() {
     if (this.items)
       return this.items;
-    const folders = [];
-    import_obsidian2.Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
-      if (f instanceof import_obsidian2.TFolder)
-        folders.push(f);
-    });
-    return folders;
+    return this.app.vault.getAllLoadedFiles().filter(
+      (f) => f instanceof import_obsidian2.TFolder
+    );
   }
   getItemText(item) {
     return item.path === "/" ? "/ (vault root)" : item.path;
@@ -3533,15 +3552,18 @@ var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   }
 };
 var FileSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
-  constructor(app, onChoose, items) {
+  constructor(app, onChoose, items, excludePaths) {
     super(app);
     this.onChoose = onChoose;
     this.items = items;
+    this.excludePaths = excludePaths;
     this.setPlaceholder("Pick a note");
   }
   getItems() {
-    var _a;
-    return (_a = this.items) != null ? _a : this.app.vault.getMarkdownFiles();
+    if (this.items)
+      return this.items;
+    const files = this.app.vault.getMarkdownFiles();
+    return this.excludePaths ? files.filter((f) => !this.excludePaths.has(f.path)) : files;
   }
   getItemText(item) {
     return item.path;

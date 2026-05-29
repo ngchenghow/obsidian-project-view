@@ -2519,13 +2519,19 @@ class ProjectListView extends ItemView {
             .setTitle("Add note to project…")
             .setIcon("file-plus")
             .onClick(() =>
-              new FileSuggestModal(this.plugin.app, (file) =>
-                void this.plugin.addNoteToProject(project, file)
+              new FileSuggestModal(
+                this.plugin.app,
+                (file) => void this.plugin.addNoteToProject(project, file),
+                undefined,
+                new Set(this.plugin.projectFiles(project).map((f) => f.path))
               ).open()
             )
         );
-        if (this.plugin.drive.isConnected()) {
-          if (!project.driveFolderId) {
+        if (!project.driveFolderId) {
+          // Linking only stores a folder id + local-folder mapping, so it needs
+          // credentials configured but not an active connection (you can link
+          // now and sign in later before the first upload/download).
+          if (this.plugin.drive.isConfigured()) {
             menu.addItem((item) =>
               item
                 .setTitle("Link to Google Drive folder")
@@ -2538,6 +2544,10 @@ class ProjectListView extends ItemView {
                   ).open()
                 )
             );
+          }
+          // Uploading as a new folder transfers files immediately, so it needs
+          // an active connection.
+          if (this.plugin.drive.isConnected()) {
             menu.addItem((item) =>
               item
                 .setTitle("Upload to Google Drive as new folder")
@@ -2863,8 +2873,11 @@ class ProjectContentView extends ItemView {
             .setTitle("Add note to project…")
             .setIcon("file-search")
             .onClick(() =>
-              new FileSuggestModal(this.plugin.app, (file) =>
-                void this.plugin.addNoteToProject(project, file)
+              new FileSuggestModal(
+                this.plugin.app,
+                (file) => void this.plugin.addNoteToProject(project, file),
+                undefined,
+                new Set(this.plugin.projectFiles(project).map((f) => f.path))
               ).open()
             )
         );
@@ -2893,31 +2906,38 @@ class ProjectContentView extends ItemView {
             )
         );
       }
-      if (project && this.plugin.drive.isConnected() && !project.driveFolderId) {
-        menu.addItem((item) =>
-          item
-            .setTitle("Link to Google Drive folder")
-            .setIcon("link")
-            .onClick(() =>
-              new DriveLinkModal(
-                this.plugin.app,
-                this.plugin,
-                project
-              ).open()
-            )
-        );
-        menu.addItem((item) =>
-          item
-            .setTitle("Upload to Google Drive as new folder")
-            .setIcon("folder-up")
-            .onClick(() =>
-              new DriveUploadAsNewModal(
-                this.plugin.app,
-                this.plugin,
-                project
-              ).open()
-            )
-        );
+      if (project && !project.driveFolderId) {
+        // Linking only stores a folder mapping: needs credentials configured,
+        // not an active connection.
+        if (this.plugin.drive.isConfigured()) {
+          menu.addItem((item) =>
+            item
+              .setTitle("Link to Google Drive folder")
+              .setIcon("link")
+              .onClick(() =>
+                new DriveLinkModal(
+                  this.plugin.app,
+                  this.plugin,
+                  project
+                ).open()
+              )
+          );
+        }
+        // Uploading as a new folder transfers now: needs an active connection.
+        if (this.plugin.drive.isConnected()) {
+          menu.addItem((item) =>
+            item
+              .setTitle("Upload to Google Drive as new folder")
+              .setIcon("folder-up")
+              .onClick(() =>
+                new DriveUploadAsNewModal(
+                  this.plugin.app,
+                  this.plugin,
+                  project
+                ).open()
+              )
+          );
+        }
       }
       if (project?.driveFolderId) {
         menu.addItem((item) =>
@@ -3687,10 +3707,21 @@ class ProjectEditModal extends Modal {
       .setDesc("Specific notes included in this project")
       .addButton((b) =>
         b.setButtonText("Add note").onClick(() => {
+          // Exclude notes already under the selected project folders.
+          const covered = new Set<string>();
+          for (const fp of this.folders) {
+            const folder = this.app.vault.getAbstractFileByPath(fp);
+            if (folder instanceof TFolder) {
+              Vault.recurseChildren(folder, (f) => {
+                if (f instanceof TFile) covered.add(f.path);
+              });
+            }
+          }
+          for (const p of this.notes) covered.add(p);
           new FileSuggestModal(this.app, (file) => {
             if (!this.notes.includes(file.path)) this.notes.push(file.path);
             this.renderForm();
-          }).open();
+          }, undefined, covered).open();
         })
       );
     this.renderChipList(contentEl, this.notes, (path) => {
@@ -3882,11 +3913,10 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
 
   getItems(): TFolder[] {
     if (this.items) return this.items;
-    const folders: TFolder[] = [];
-    Vault.recurseChildren(this.app.vault.getRoot(), (f) => {
-      if (f instanceof TFolder) folders.push(f);
-    });
-    return folders;
+    // vault.getAllLoadedFiles() uses Obsidian's in-memory index — no tree walk.
+    return this.app.vault.getAllLoadedFiles().filter(
+      (f): f is TFolder => f instanceof TFolder
+    );
   }
 
   getItemText(item: TFolder): string {
@@ -3901,16 +3931,30 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
 class FileSuggestModal extends FuzzySuggestModal<TFile> {
   private onChoose: (file: TFile) => void;
   private items?: TFile[];
+  private excludePaths?: Set<string>;
 
-  constructor(app: App, onChoose: (file: TFile) => void, items?: TFile[]) {
+  constructor(
+    app: App,
+    onChoose: (file: TFile) => void,
+    items?: TFile[],
+    excludePaths?: Set<string>
+  ) {
     super(app);
     this.onChoose = onChoose;
     this.items = items;
+    this.excludePaths = excludePaths;
     this.setPlaceholder("Pick a note");
   }
 
   getItems(): TFile[] {
-    return this.items ?? this.app.vault.getMarkdownFiles();
+    // Enumeration is scoped as tightly as possible: when items are provided
+    // (e.g. project files only), use those. Otherwise enumerate markdown files
+    // and filter out paths the caller has already excluded.
+    if (this.items) return this.items;
+    const files = this.app.vault.getMarkdownFiles();
+    return this.excludePaths
+      ? files.filter((f) => !this.excludePaths!.has(f.path))
+      : files;
   }
 
   getItemText(item: TFile): string {
