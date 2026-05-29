@@ -2509,7 +2509,7 @@ class ProjectListView extends ItemView {
             .setTitle("Add folder to project…")
             .setIcon("folder-plus")
             .onClick(() =>
-              new FolderSuggestModal(this.plugin.app, (folder) =>
+              VaultTreeModal.pickFolder(this.plugin.app, (folder) =>
                 void this.plugin.addFolderToProject(project, folder)
               ).open()
             )
@@ -2519,11 +2519,14 @@ class ProjectListView extends ItemView {
             .setTitle("Add note to project…")
             .setIcon("file-plus")
             .onClick(() =>
-              new FileSuggestModal(
+              VaultTreeModal.pickNote(
                 this.plugin.app,
                 (file) => void this.plugin.addNoteToProject(project, file),
-                undefined,
-                new Set(this.plugin.projectFiles(project).map((f) => f.path))
+                {
+                  excludePaths: new Set(
+                    this.plugin.projectFiles(project).map((f) => f.path)
+                  ),
+                }
               ).open()
             )
         );
@@ -2873,11 +2876,14 @@ class ProjectContentView extends ItemView {
             .setTitle("Add note to project…")
             .setIcon("file-search")
             .onClick(() =>
-              new FileSuggestModal(
+              VaultTreeModal.pickNote(
                 this.plugin.app,
                 (file) => void this.plugin.addNoteToProject(project, file),
-                undefined,
-                new Set(this.plugin.projectFiles(project).map((f) => f.path))
+                {
+                  excludePaths: new Set(
+                    this.plugin.projectFiles(project).map((f) => f.path)
+                  ),
+                }
               ).open()
             )
         );
@@ -2886,7 +2892,7 @@ class ProjectContentView extends ItemView {
             .setTitle("Add folder to project…")
             .setIcon("folder-plus")
             .onClick(() =>
-              new FolderSuggestModal(this.plugin.app, (folder) =>
+              VaultTreeModal.pickFolder(this.plugin.app, (folder) =>
                 void this.plugin.addFolderToProject(project, folder)
               ).open()
             )
@@ -3498,7 +3504,7 @@ class ProjectContentView extends ItemView {
         .setTitle("Move to folder in vault…")
         .setIcon("folder-input")
         .onClick(() =>
-          new FolderSuggestModal(
+          VaultTreeModal.pickFolder(
             this.plugin.app,
             (folder) => void this.moveFileTo(file, folder)
           ).open()
@@ -3689,7 +3695,7 @@ class ProjectEditModal extends Modal {
       .setDesc("Folders included in this project")
       .addButton((b) =>
         b.setButtonText("Add folder").onClick(() => {
-          new FolderSuggestModal(this.app, (folder) => {
+          VaultTreeModal.pickFolder(this.app, (folder) => {
             if (!this.folders.includes(folder.path)) {
               this.folders.push(folder.path);
             }
@@ -3718,10 +3724,14 @@ class ProjectEditModal extends Modal {
             }
           }
           for (const p of this.notes) covered.add(p);
-          new FileSuggestModal(this.app, (file) => {
-            if (!this.notes.includes(file.path)) this.notes.push(file.path);
-            this.renderForm();
-          }, undefined, covered).open();
+          VaultTreeModal.pickNote(
+            this.app,
+            (file) => {
+              if (!this.notes.includes(file.path)) this.notes.push(file.path);
+              this.renderForm();
+            },
+            { excludePaths: covered }
+          ).open();
         })
       );
     this.renderChipList(contentEl, this.notes, (path) => {
@@ -3800,7 +3810,7 @@ class ProjectEditModal extends Modal {
       )
       .addButton((b) =>
         b.setButtonText("Choose").onClick(() =>
-          new FolderSuggestModal(this.app, (folder) => {
+          VaultTreeModal.pickFolder(this.app, (folder) => {
             this.driveTarget = folder.path === "/" ? "" : folder.path;
             this.renderForm();
           }).open()
@@ -3896,15 +3906,175 @@ class ProjectEditModal extends Modal {
   }
 }
 
-class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
-  private onChoose: (folder: TFolder) => void;
-  private items?: TFolder[];
+/**
+ * A lazy vault browser used to pick any folder or note. It expands folders on
+ * demand (reading only `folder.children` as the user drills in) instead of
+ * enumerating the whole vault up front, so it never lists files the user
+ * doesn't navigate to.
+ */
+class VaultTreeModal extends Modal {
+  private constructor(
+    app: App,
+    private mode: "folder" | "note",
+    private onChoose: (item: TFolder | TFile) => void,
+    private opts: { excludePaths?: Set<string> } = {}
+  ) {
+    super(app);
+  }
 
-  constructor(
+  /** Pick any folder in the vault. */
+  static pickFolder(
     app: App,
     onChoose: (folder: TFolder) => void,
-    items?: TFolder[]
-  ) {
+    opts: { excludePaths?: Set<string> } = {}
+  ): VaultTreeModal {
+    return new VaultTreeModal(app, "folder", (i) => onChoose(i as TFolder), opts);
+  }
+
+  /** Pick any markdown note in the vault. */
+  static pickNote(
+    app: App,
+    onChoose: (file: TFile) => void,
+    opts: { excludePaths?: Set<string> } = {}
+  ): VaultTreeModal {
+    return new VaultTreeModal(app, "note", (i) => onChoose(i as TFile), opts);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", {
+      text: this.mode === "folder" ? "Choose a folder" : "Choose a note",
+    });
+    contentEl.createDiv({
+      cls: "rv-empty-sm",
+      text:
+        this.mode === "folder"
+          ? "Click a folder to browse it, then use its Select button to choose it."
+          : "Expand folders with the arrow, then click a note to select it.",
+    });
+
+    const tree = contentEl.createDiv({ cls: "rv-tree-picker" });
+    const root = this.app.vault.getRoot();
+    if (this.mode === "folder") {
+      const row = tree.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+      row.style.paddingLeft = "8px";
+      row.createSpan({ cls: "rv-tree-twirl" });
+      setIcon(row.createSpan({ cls: "rv-file-icon" }), "folder");
+      row.createSpan({ cls: "rv-file-name", text: "/ (vault root)" });
+      this.addSelectButton(row, root);
+    }
+    this.renderChildren(tree, root, this.mode === "folder" ? 1 : 0);
+  }
+
+  /** A "Select" button that chooses this folder (folder mode only). */
+  private addSelectButton(row: HTMLElement, folder: TFolder): void {
+    const btn = row.createEl("button", {
+      cls: "rv-tree-select",
+      text: "Select",
+    });
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      this.choose(folder);
+    };
+  }
+
+  private hasExpandableChildren(folder: TFolder): boolean {
+    return folder.children.some(
+      (c) =>
+        c instanceof TFolder ||
+        (this.mode === "note" && c instanceof TFile && c.extension === "md")
+    );
+  }
+
+  private renderChildren(
+    container: HTMLElement,
+    folder: TFolder,
+    depth: number
+  ): void {
+    const children = [...folder.children];
+    const folders = children
+      .filter((c): c is TFolder => c instanceof TFolder)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of folders) this.renderFolderRow(container, f, depth);
+    if (this.mode === "note") {
+      const files = children
+        .filter(
+          (c): c is TFile => c instanceof TFile && c.extension === "md"
+        )
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const f of files) this.renderFileRow(container, f, depth);
+    }
+  }
+
+  private renderFolderRow(
+    container: HTMLElement,
+    folder: TFolder,
+    depth: number
+  ): void {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    const expandable = this.hasExpandableChildren(folder);
+    const twirl = row.createSpan({ cls: "rv-tree-twirl" });
+    if (expandable) setIcon(twirl, "chevron-right");
+    setIcon(row.createSpan({ cls: "rv-file-icon" }), "folder");
+    row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
+
+    let childrenWrap: HTMLElement | null = null;
+    let expanded = false;
+    const toggle = (): void => {
+      if (!expandable) return;
+      expanded = !expanded;
+      if (expanded) {
+        if (!childrenWrap) {
+          childrenWrap = container.createDiv();
+          row.after(childrenWrap);
+          // Lazy: only read this folder's children when it is first expanded.
+          this.renderChildren(childrenWrap, folder, depth + 1);
+        }
+        childrenWrap.style.display = "";
+        setIcon(twirl, "chevron-down");
+      } else {
+        if (childrenWrap) childrenWrap.style.display = "none";
+        setIcon(twirl, "chevron-right");
+      }
+    };
+    twirl.onclick = (e) => {
+      e.stopPropagation();
+      toggle();
+    };
+    // Clicking the row browses (expands/collapses) in both modes. In folder
+    // mode an explicit Select button is what actually chooses the folder.
+    row.onclick = () => toggle();
+    if (this.mode === "folder") this.addSelectButton(row, folder);
+  }
+
+  private renderFileRow(
+    container: HTMLElement,
+    file: TFile,
+    depth: number
+  ): void {
+    if (this.opts.excludePaths?.has(file.path)) return;
+    const row = container.createDiv({ cls: "rv-tree-row" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.createSpan({ cls: "rv-tree-twirl" });
+    setIcon(row.createSpan({ cls: "rv-file-icon" }), "file");
+    row.createSpan({ cls: "rv-file-name", text: file.basename });
+    row.onclick = () => this.choose(file);
+  }
+
+  private choose(item: TFolder | TFile): void {
+    this.onChoose(item);
+    this.close();
+  }
+}
+
+class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
+  private onChoose: (folder: TFolder) => void;
+  private items: TFolder[];
+
+  constructor(app: App, onChoose: (folder: TFolder) => void, items: TFolder[]) {
     super(app);
     this.onChoose = onChoose;
     this.items = items;
@@ -3912,11 +4082,7 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
   }
 
   getItems(): TFolder[] {
-    if (this.items) return this.items;
-    // vault.getAllLoadedFiles() uses Obsidian's in-memory index — no tree walk.
-    return this.app.vault.getAllLoadedFiles().filter(
-      (f): f is TFolder => f instanceof TFolder
-    );
+    return this.items;
   }
 
   getItemText(item: TFolder): string {
@@ -3930,31 +4096,17 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
 
 class FileSuggestModal extends FuzzySuggestModal<TFile> {
   private onChoose: (file: TFile) => void;
-  private items?: TFile[];
-  private excludePaths?: Set<string>;
+  private items: TFile[];
 
-  constructor(
-    app: App,
-    onChoose: (file: TFile) => void,
-    items?: TFile[],
-    excludePaths?: Set<string>
-  ) {
+  constructor(app: App, onChoose: (file: TFile) => void, items: TFile[]) {
     super(app);
     this.onChoose = onChoose;
     this.items = items;
-    this.excludePaths = excludePaths;
     this.setPlaceholder("Pick a note");
   }
 
   getItems(): TFile[] {
-    // Enumeration is scoped as tightly as possible: when items are provided
-    // (e.g. project files only), use those. Otherwise enumerate markdown files
-    // and filter out paths the caller has already excluded.
-    if (this.items) return this.items;
-    const files = this.app.vault.getMarkdownFiles();
-    return this.excludePaths
-      ? files.filter((f) => !this.excludePaths!.has(f.path))
-      : files;
+    return this.items;
   }
 
   getItemText(item: TFile): string {
@@ -4222,7 +4374,7 @@ class DriveLinkModal extends Modal {
       )
       .addButton((b) =>
         b.setButtonText("Choose").onClick(() =>
-          new FolderSuggestModal(this.app, (folder) => {
+          VaultTreeModal.pickFolder(this.app, (folder) => {
             this.localFolder = folder.path === "/" ? "" : folder.path;
             this.render();
           }).open()

@@ -2430,7 +2430,7 @@ var ProjectListView = class extends import_obsidian2.ItemView {
         );
         menu.addItem(
           (item) => item.setTitle("Add folder to project\u2026").setIcon("folder-plus").onClick(
-            () => new FolderSuggestModal(
+            () => VaultTreeModal.pickFolder(
               this.plugin.app,
               (folder) => void this.plugin.addFolderToProject(project, folder)
             ).open()
@@ -2438,11 +2438,14 @@ var ProjectListView = class extends import_obsidian2.ItemView {
         );
         menu.addItem(
           (item) => item.setTitle("Add note to project\u2026").setIcon("file-plus").onClick(
-            () => new FileSuggestModal(
+            () => VaultTreeModal.pickNote(
               this.plugin.app,
               (file) => void this.plugin.addNoteToProject(project, file),
-              void 0,
-              new Set(this.plugin.projectFiles(project).map((f) => f.path))
+              {
+                excludePaths: new Set(
+                  this.plugin.projectFiles(project).map((f) => f.path)
+                )
+              }
             ).open()
           )
         );
@@ -2712,17 +2715,20 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
         );
         menu.addItem(
           (item) => item.setTitle("Add note to project\u2026").setIcon("file-search").onClick(
-            () => new FileSuggestModal(
+            () => VaultTreeModal.pickNote(
               this.plugin.app,
               (file) => void this.plugin.addNoteToProject(project, file),
-              void 0,
-              new Set(this.plugin.projectFiles(project).map((f) => f.path))
+              {
+                excludePaths: new Set(
+                  this.plugin.projectFiles(project).map((f) => f.path)
+                )
+              }
             ).open()
           )
         );
         menu.addItem(
           (item) => item.setTitle("Add folder to project\u2026").setIcon("folder-plus").onClick(
-            () => new FolderSuggestModal(
+            () => VaultTreeModal.pickFolder(
               this.plugin.app,
               (folder) => void this.plugin.addFolderToProject(project, folder)
             ).open()
@@ -3203,7 +3209,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     }
     menu.addItem(
       (i) => i.setTitle("Move to folder in vault\u2026").setIcon("folder-input").onClick(
-        () => new FolderSuggestModal(
+        () => VaultTreeModal.pickFolder(
           this.plugin.app,
           (folder) => void this.moveFileTo(file, folder)
         ).open()
@@ -3353,7 +3359,7 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
     );
     new import_obsidian2.Setting(contentEl).setName("Folders").setDesc("Folders included in this project").addButton(
       (b) => b.setButtonText("Add folder").onClick(() => {
-        new FolderSuggestModal(this.app, (folder) => {
+        VaultTreeModal.pickFolder(this.app, (folder) => {
           if (!this.folders.includes(folder.path)) {
             this.folders.push(folder.path);
           }
@@ -3379,11 +3385,15 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
         }
         for (const p of this.notes)
           covered.add(p);
-        new FileSuggestModal(this.app, (file) => {
-          if (!this.notes.includes(file.path))
-            this.notes.push(file.path);
-          this.renderForm();
-        }, void 0, covered).open();
+        VaultTreeModal.pickNote(
+          this.app,
+          (file) => {
+            if (!this.notes.includes(file.path))
+              this.notes.push(file.path);
+            this.renderForm();
+          },
+          { excludePaths: covered }
+        ).open();
       })
     );
     this.renderChipList(contentEl, this.notes, (path) => {
@@ -3443,7 +3453,7 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
       (t) => t.setPlaceholder("Folder name (defaults to the Drive folder name)").setValue(this.driveTarget).onChange((v) => this.driveTarget = v)
     ).addButton(
       (b) => b.setButtonText("Choose").onClick(
-        () => new FolderSuggestModal(this.app, (folder) => {
+        () => VaultTreeModal.pickFolder(this.app, (folder) => {
           this.driveTarget = folder.path === "/" ? "" : folder.path;
           this.renderForm();
         }).open()
@@ -3530,6 +3540,126 @@ var ProjectEditModal = class extends import_obsidian2.Modal {
     this.close();
   }
 };
+var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
+  constructor(app, mode, onChoose, opts = {}) {
+    super(app);
+    this.mode = mode;
+    this.onChoose = onChoose;
+    this.opts = opts;
+  }
+  /** Pick any folder in the vault. */
+  static pickFolder(app, onChoose, opts = {}) {
+    return new _VaultTreeModal(app, "folder", (i) => onChoose(i), opts);
+  }
+  /** Pick any markdown note in the vault. */
+  static pickNote(app, onChoose, opts = {}) {
+    return new _VaultTreeModal(app, "note", (i) => onChoose(i), opts);
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", {
+      text: this.mode === "folder" ? "Choose a folder" : "Choose a note"
+    });
+    contentEl.createDiv({
+      cls: "rv-empty-sm",
+      text: this.mode === "folder" ? "Click a folder to browse it, then use its Select button to choose it." : "Expand folders with the arrow, then click a note to select it."
+    });
+    const tree = contentEl.createDiv({ cls: "rv-tree-picker" });
+    const root = this.app.vault.getRoot();
+    if (this.mode === "folder") {
+      const row = tree.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+      row.style.paddingLeft = "8px";
+      row.createSpan({ cls: "rv-tree-twirl" });
+      (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "folder");
+      row.createSpan({ cls: "rv-file-name", text: "/ (vault root)" });
+      this.addSelectButton(row, root);
+    }
+    this.renderChildren(tree, root, this.mode === "folder" ? 1 : 0);
+  }
+  /** A "Select" button that chooses this folder (folder mode only). */
+  addSelectButton(row, folder) {
+    const btn = row.createEl("button", {
+      cls: "rv-tree-select",
+      text: "Select"
+    });
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      this.choose(folder);
+    };
+  }
+  hasExpandableChildren(folder) {
+    return folder.children.some(
+      (c) => c instanceof import_obsidian2.TFolder || this.mode === "note" && c instanceof import_obsidian2.TFile && c.extension === "md"
+    );
+  }
+  renderChildren(container, folder, depth) {
+    const children = [...folder.children];
+    const folders = children.filter((c) => c instanceof import_obsidian2.TFolder).sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of folders)
+      this.renderFolderRow(container, f, depth);
+    if (this.mode === "note") {
+      const files = children.filter(
+        (c) => c instanceof import_obsidian2.TFile && c.extension === "md"
+      ).sort((a, b) => a.name.localeCompare(b.name));
+      for (const f of files)
+        this.renderFileRow(container, f, depth);
+    }
+  }
+  renderFolderRow(container, folder, depth) {
+    const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    const expandable = this.hasExpandableChildren(folder);
+    const twirl = row.createSpan({ cls: "rv-tree-twirl" });
+    if (expandable)
+      (0, import_obsidian2.setIcon)(twirl, "chevron-right");
+    (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "folder");
+    row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
+    let childrenWrap = null;
+    let expanded = false;
+    const toggle = () => {
+      if (!expandable)
+        return;
+      expanded = !expanded;
+      if (expanded) {
+        if (!childrenWrap) {
+          childrenWrap = container.createDiv();
+          row.after(childrenWrap);
+          this.renderChildren(childrenWrap, folder, depth + 1);
+        }
+        childrenWrap.style.display = "";
+        (0, import_obsidian2.setIcon)(twirl, "chevron-down");
+      } else {
+        if (childrenWrap)
+          childrenWrap.style.display = "none";
+        (0, import_obsidian2.setIcon)(twirl, "chevron-right");
+      }
+    };
+    twirl.onclick = (e) => {
+      e.stopPropagation();
+      toggle();
+    };
+    row.onclick = () => toggle();
+    if (this.mode === "folder")
+      this.addSelectButton(row, folder);
+  }
+  renderFileRow(container, file, depth) {
+    var _a;
+    if ((_a = this.opts.excludePaths) == null ? void 0 : _a.has(file.path))
+      return;
+    const row = container.createDiv({ cls: "rv-tree-row" });
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.createSpan({ cls: "rv-tree-twirl" });
+    (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "file");
+    row.createSpan({ cls: "rv-file-name", text: file.basename });
+    row.onclick = () => this.choose(file);
+  }
+  choose(item) {
+    this.onChoose(item);
+    this.close();
+  }
+};
 var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   constructor(app, onChoose, items) {
     super(app);
@@ -3538,11 +3668,7 @@ var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
     this.setPlaceholder("Pick a folder");
   }
   getItems() {
-    if (this.items)
-      return this.items;
-    return this.app.vault.getAllLoadedFiles().filter(
-      (f) => f instanceof import_obsidian2.TFolder
-    );
+    return this.items;
   }
   getItemText(item) {
     return item.path === "/" ? "/ (vault root)" : item.path;
@@ -3552,18 +3678,14 @@ var FolderSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
   }
 };
 var FileSuggestModal = class extends import_obsidian2.FuzzySuggestModal {
-  constructor(app, onChoose, items, excludePaths) {
+  constructor(app, onChoose, items) {
     super(app);
     this.onChoose = onChoose;
     this.items = items;
-    this.excludePaths = excludePaths;
     this.setPlaceholder("Pick a note");
   }
   getItems() {
-    if (this.items)
-      return this.items;
-    const files = this.app.vault.getMarkdownFiles();
-    return this.excludePaths ? files.filter((f) => !this.excludePaths.has(f.path)) : files;
+    return this.items;
   }
   getItemText(item) {
     return item.path;
@@ -3755,7 +3877,7 @@ var DriveLinkModal = class extends import_obsidian2.Modal {
       (t) => t.setPlaceholder("Folder path (leave blank to use project's first folder)").setValue(this.localFolder).onChange((v) => this.localFolder = v)
     ).addButton(
       (b) => b.setButtonText("Choose").onClick(
-        () => new FolderSuggestModal(this.app, (folder) => {
+        () => VaultTreeModal.pickFolder(this.app, (folder) => {
           this.localFolder = folder.path === "/" ? "" : folder.path;
           this.render();
         }).open()
