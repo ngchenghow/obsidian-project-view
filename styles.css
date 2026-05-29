@@ -27,8 +27,9 @@
   flex-shrink: 0;
 }
 
-.rv-icon-btn:disabled {
-  opacity: 0.35 !important;
+.rv-icon-btn:disabled,
+.rv-icon-btn:disabled:hover {
+  opacity: 0.35;
   cursor: default;
 }
 
@@ -41,9 +42,9 @@
   opacity: 0.6;
 }
 
-.rv-header-menu:hover,
-.rv-header-menu.is-active {
-  opacity: 1 !important;
+.rv-header:hover .rv-header-menu:hover,
+.rv-header .rv-header-menu.is-active {
+  opacity: 1;
 }
 
 .rv-new-btn {
@@ -112,29 +113,29 @@
   flex-shrink: 0;
 }
 
-.rv-icon-btn,
-.rv-icon-btn:hover,
-.rv-icon-btn:active,
-.rv-icon-btn:focus,
-.rv-icon-btn.is-active {
+.workspace-leaf-content .rv-icon-btn,
+.workspace-leaf-content .rv-icon-btn:hover,
+.workspace-leaf-content .rv-icon-btn:active,
+.workspace-leaf-content .rv-icon-btn:focus,
+.workspace-leaf-content .rv-icon-btn.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   padding: 4px;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
+  background: transparent;
+  border: none;
+  box-shadow: none;
   border-radius: var(--radius-s);
   cursor: pointer;
   color: var(--text-muted);
   /* Only transparency/colour should change on hover - never size/position. */
-  transform: none !important;
+  transform: none;
   transition: opacity 0.1s ease, color 0.1s ease;
 }
 
-.rv-icon-btn:hover,
-.rv-icon-btn.is-active {
+.workspace-leaf-content .rv-icon-btn:hover,
+.workspace-leaf-content .rv-icon-btn.is-active {
   color: var(--text-normal);
 }
 
@@ -181,9 +182,9 @@
   opacity: 0.6;
 }
 
-.recent-view-content .rv-content-menu:hover,
-.recent-view-content .rv-content-menu.is-active {
-  opacity: 1 !important;
+.recent-view-content .rv-content-header:hover .rv-content-menu:hover,
+.recent-view-content .rv-content-header .rv-content-menu.is-active {
+  opacity: 1;
 }
 
 .rv-folder-section {
@@ -259,9 +260,9 @@
   opacity: 0.6;
 }
 
-.rv-item-menu:hover,
-.rv-item-menu.is-active {
-  opacity: 1 !important;
+.rv-file-item:hover .rv-item-menu:hover,
+.rv-file-item .rv-item-menu.is-active {
+  opacity: 1;
 }
 
 /* 3-dot menu on section headers (Pinned / folders), shown on hover */
@@ -275,15 +276,15 @@
   opacity: 0.6;
 }
 
-.rv-head-menu:hover,
-.rv-head-menu.is-active {
-  opacity: 1 !important;
+.rv-folder-head:hover .rv-head-menu:hover,
+.rv-folder-head .rv-head-menu.is-active {
+  opacity: 1;
 }
 
 /* Pinned drag-to-reorder */
 /* Keep the menu visible while reordering so "Done" is easy to reach. */
 .rv-pinned-section.rv-reordering .rv-head-menu {
-  opacity: 1 !important;
+  opacity: 1;
 }
 
 .rv-pinned-section.rv-reordering .rv-file-list {
@@ -318,7 +319,7 @@
 }
 
 .rv-panes-section.rv-reordering .rv-head-menu {
-  opacity: 1 !important;
+  opacity: 1;
 }
 
 /* Modal */

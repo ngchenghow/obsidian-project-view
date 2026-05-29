@@ -306,7 +306,7 @@ export class GoogleDriveClient {
     return { name, data: res.arrayBuffer };
   }
 
-  private async createFolder(name: string, parentId: string): Promise<string> {
+  async createFolder(name: string, parentId: string): Promise<string> {
     const res = await this.api(
       "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id",
       {
@@ -372,6 +372,17 @@ export class GoogleDriveClient {
     );
     if (match) await this.updateFileContent(match.id, data);
     else await this.createFile(file.name, parentId, data);
+  }
+
+  /** Create a new Drive folder named `name` under `parentId`, upload `vaultDir` into it, return the new folder's id. */
+  async uploadFolderAsNew(
+    name: string,
+    parentId: string,
+    vaultDir: string
+  ): Promise<{ folderId: string; count: number }> {
+    const folderId = await this.createFolder(name, parentId);
+    const count = await this.uploadFolder(vaultDir, folderId);
+    return { folderId, count };
   }
 
   /** Recursively upload a vault folder's contents into a Drive folder. */

@@ -1,7 +1,7 @@
 {
   "id": "project-view",
   "name": "ProjectView",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.4.0",
   "description": "Organize notes into projects. Each project tracks its folders, notes and last-open tabs - click a project to instantly restore its workspace.",
   "author": "ngchenghow",

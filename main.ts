@@ -2230,6 +2230,42 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /** Upload project files to a brand-new Drive folder, then link the project to it. */
+  async uploadProjectToDriveAsNewFolder(
+    project: Project,
+    parentFolderId: string
+  ): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    const localFolder = project.driveLocalFolder ?? project.folders[0] ?? "";
+    if (!localFolder) {
+      new Notice("This project has no folder to upload.");
+      return;
+    }
+    const folderName = sanitizeVaultName(project.name);
+    new Notice(`Creating "${folderName}" on Google Drive and uploading…`);
+    try {
+      const { folderId, count } = await this.drive.uploadFolderAsNew(
+        folderName,
+        parentFolderId,
+        localFolder
+      );
+      project.driveFolderId = folderId;
+      project.driveLocalFolder = localFolder;
+      await this.persistNow();
+      this.refreshContentView();
+      new Notice(`Uploaded ${count} file(s) to new Drive folder "${folderName}".`);
+    } catch (e) {
+      new Notice(`Google Drive upload failed: ${(e as Error).message}`);
+    }
+  }
+
   /** Re-download the project's linked Drive folder into its local folder. */
   async downloadProjectFromDrive(project: Project): Promise<void> {
     if (!isDesktop()) {
@@ -2331,6 +2367,30 @@ export default class RecentViewPlugin extends Plugin {
     } catch (e) {
       new Notice(`Google Drive upload failed: ${(e as Error).message}`);
     }
+  }
+
+  /** Link a project to an existing Drive folder (no upload/download performed). */
+  async linkProjectToDrive(
+    project: Project,
+    folderId: string,
+    localFolder: string
+  ): Promise<void> {
+    project.driveFolderId = folderId;
+    project.driveLocalFolder = localFolder;
+    await this.persistNow();
+    this.refreshListView();
+    this.refreshContentView();
+    new Notice(`"${project.name}" linked to Google Drive.`);
+  }
+
+  /** Remove the Drive link from a project without touching local or remote files. */
+  async unlinkProjectFromDrive(project: Project): Promise<void> {
+    delete project.driveFolderId;
+    delete project.driveLocalFolder;
+    await this.persistNow();
+    this.refreshListView();
+    this.refreshContentView();
+    new Notice(`"${project.name}" unlinked from Google Drive.`);
   }
 }
 
@@ -2464,6 +2524,34 @@ class ProjectListView extends ItemView {
               ).open()
             )
         );
+        if (this.plugin.drive.isConnected()) {
+          if (!project.driveFolderId) {
+            menu.addItem((item) =>
+              item
+                .setTitle("Link to Google Drive folder")
+                .setIcon("link")
+                .onClick(() =>
+                  new DriveLinkModal(
+                    this.plugin.app,
+                    this.plugin,
+                    project
+                  ).open()
+                )
+            );
+            menu.addItem((item) =>
+              item
+                .setTitle("Upload to Google Drive as new folder")
+                .setIcon("folder-up")
+                .onClick(() =>
+                  new DriveUploadAsNewModal(
+                    this.plugin.app,
+                    this.plugin,
+                    project
+                  ).open()
+                )
+            );
+          }
+        }
         if (project.driveFolderId) {
           menu.addItem((item) =>
             item
@@ -2476,6 +2564,18 @@ class ProjectListView extends ItemView {
               .setTitle("Upload to Google Drive")
               .setIcon("cloud-upload")
               .onClick(() => void this.plugin.uploadProjectToDrive(project))
+          );
+          menu.addItem((item) =>
+            item
+              .setTitle("Unlink from Google Drive")
+              .setIcon("unlink")
+              .onClick(() =>
+                new ConfirmModal(
+                  this.plugin.app,
+                  `Unlink "${project.name}" from Google Drive? Local and Drive files are not deleted.`,
+                  () => void this.plugin.unlinkProjectFromDrive(project)
+                ).open()
+              )
           );
         }
         menu.addItem((item) =>
@@ -2793,6 +2893,32 @@ class ProjectContentView extends ItemView {
             )
         );
       }
+      if (project && this.plugin.drive.isConnected() && !project.driveFolderId) {
+        menu.addItem((item) =>
+          item
+            .setTitle("Link to Google Drive folder")
+            .setIcon("link")
+            .onClick(() =>
+              new DriveLinkModal(
+                this.plugin.app,
+                this.plugin,
+                project
+              ).open()
+            )
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Upload to Google Drive as new folder")
+            .setIcon("folder-up")
+            .onClick(() =>
+              new DriveUploadAsNewModal(
+                this.plugin.app,
+                this.plugin,
+                project
+              ).open()
+            )
+        );
+      }
       if (project?.driveFolderId) {
         menu.addItem((item) =>
           item
@@ -2805,6 +2931,18 @@ class ProjectContentView extends ItemView {
             .setTitle("Upload to Google Drive")
             .setIcon("cloud-upload")
             .onClick(() => void this.plugin.uploadProjectToDrive(project))
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Unlink from Google Drive")
+            .setIcon("unlink")
+            .onClick(() =>
+              new ConfirmModal(
+                this.plugin.app,
+                `Unlink "${project.name}" from Google Drive? Local and Drive files are not deleted.`,
+                () => void this.plugin.unlinkProjectFromDrive(project)
+              ).open()
+            )
         );
       }
       menu.addItem((item) =>
@@ -3969,6 +4107,161 @@ class PromptModal extends Modal {
     }
     this.onSubmit(v);
     this.close();
+  }
+}
+
+class DriveLinkModal extends Modal {
+  private plugin: RecentViewPlugin;
+  private project: Project;
+  private folderLink = "";
+  private localFolder = "";
+  private resolvedName = "";
+
+  constructor(app: App, plugin: RecentViewPlugin, project: Project) {
+    super(app);
+    this.plugin = plugin;
+    this.project = project;
+    this.localFolder = project.folders[0] ?? "";
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Link to Google Drive folder" });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Link this project to an existing Google Drive folder so you can upload " +
+        "or download later. No files are transferred now.",
+    });
+
+    new Setting(contentEl)
+      .setName("Drive folder")
+      .setDesc("Paste a Google Drive folder share link or folder ID.")
+      .addText((t) =>
+        t
+          .setPlaceholder("https://drive.google.com/drive/folders/…")
+          .setValue(this.folderLink)
+          .onChange((v) => {
+            this.folderLink = v;
+            this.resolvedName = "";
+          })
+      )
+      .addButton((b) =>
+        b.setButtonText("Fetch name").onClick(async () => {
+          const id = parseDriveFolderId(this.folderLink);
+          if (!id) {
+            new Notice("Couldn't find a Google Drive folder in that link.");
+            return;
+          }
+          if (!this.plugin.drive.isConnected()) {
+            new Notice("Connect Google Drive in plugin settings first.");
+            return;
+          }
+          try {
+            this.resolvedName = await this.plugin.drive.getFolderName(id);
+            new Notice(`Drive folder: "${this.resolvedName}"`);
+          } catch (e) {
+            new Notice(`Google Drive: ${(e as Error).message}`);
+          }
+        })
+      );
+
+    new Setting(contentEl)
+      .setName("Local folder for upload/download")
+      .setDesc("The vault folder whose contents map to the Drive folder.")
+      .addText((t) =>
+        t
+          .setPlaceholder("Folder path (leave blank to use project's first folder)")
+          .setValue(this.localFolder)
+          .onChange((v) => (this.localFolder = v))
+      )
+      .addButton((b) =>
+        b.setButtonText("Choose").onClick(() =>
+          new FolderSuggestModal(this.app, (folder) => {
+            this.localFolder = folder.path === "/" ? "" : folder.path;
+            this.render();
+          }).open()
+        )
+      );
+
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "Link" });
+    ok.onclick = () => void this.submit();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    this.onOpen();
+  }
+
+  private async submit(): Promise<void> {
+    const id = parseDriveFolderId(this.folderLink);
+    if (!id) {
+      new Notice("Couldn't find a Google Drive folder in that link.");
+      return;
+    }
+    const local = this.localFolder.trim() || (this.project.folders[0] ?? "");
+    this.close();
+    await this.plugin.linkProjectToDrive(this.project, id, local);
+  }
+}
+
+class DriveUploadAsNewModal extends Modal {
+  private plugin: RecentViewPlugin;
+  private project: Project;
+  private parentLink = "";
+
+  constructor(app: App, plugin: RecentViewPlugin, project: Project) {
+    super(app);
+    this.plugin = plugin;
+    this.project = project;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: "Upload to Google Drive as new folder" });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        `Creates a new Google Drive folder named "${this.project.name}" ` +
+        "under the chosen parent and uploads the project's local folder into it. " +
+        "Leave the parent field empty to upload to My Drive root.",
+    });
+
+    new Setting(contentEl)
+      .setName("Parent folder (optional)")
+      .setDesc("Paste a Google Drive folder link or ID, or leave blank for My Drive root.")
+      .addText((t) =>
+        t
+          .setPlaceholder("https://drive.google.com/drive/folders/… or blank")
+          .setValue(this.parentLink)
+          .onChange((v) => (this.parentLink = v))
+      );
+
+    const footer = contentEl.createDiv({ cls: "rv-modal-footer" });
+    const ok = footer.createEl("button", { cls: "mod-cta", text: "Upload" });
+    ok.onclick = () => void this.submit();
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+  }
+
+  private async submit(): Promise<void> {
+    let parentId = "root";
+    const link = this.parentLink.trim();
+    if (link) {
+      const parsed = parseDriveFolderId(link);
+      if (!parsed) {
+        new Notice("Couldn't find a Google Drive folder in that link.");
+        return;
+      }
+      parentId = parsed;
+    }
+    this.close();
+    await this.plugin.uploadProjectToDriveAsNewFolder(this.project, parentId);
   }
 }
 
