@@ -2339,7 +2339,10 @@ export default class RecentViewPlugin extends Plugin {
     await this.openNoteInPane(project, targetPaneId, file);
   }
 
-  /** Upload a single file to its matching place in the project's Drive folder. */
+  /**
+   * Upload a single file to its matching place in the project's Drive folder,
+   * along with any media/notes the file directly embeds (images, PDFs, etc).
+   */
   async uploadFileToDrive(project: Project, file: TFile): Promise<void> {
     if (!isDesktop()) {
       new Notice("Google Drive is desktop-only.");
@@ -2354,23 +2357,242 @@ export default class RecentViewPlugin extends Plugin {
       return;
     }
     const local = project.driveLocalFolder ?? "";
-    let dirParts: string[] = [];
-    if (local && file.path.startsWith(local + "/")) {
-      const parts = file.path.slice(local.length + 1).split("/");
-      parts.pop(); // drop the file name
-      dirParts = parts;
-    }
+    const mainParts = this.relDirPartsUnder(file.path, local);
     new Notice(`Uploading "${file.name}" to Google Drive…`);
+    const queue: { f: TFile; parts: string[] }[] = [{ f: file, parts: mainParts }];
+    for (const att of await this.collectEmbeddedFiles(file)) {
+      if (!local) continue;
+      if (att.path !== `${local}/${att.name}` && !att.path.startsWith(`${local}/`)) continue;
+      queue.push({ f: att, parts: this.relDirPartsUnder(att.path, local) });
+    }
+    let written = 0;
+    let unchanged = 0;
     try {
-      const uploaded = await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
-      new Notice(
-        uploaded
-          ? `Uploaded "${file.name}" to Google Drive.`
-          : `"${file.name}" is already up to date on Google Drive.`
-      );
+      for (const { f, parts } of queue) {
+        const u = await this.drive.uploadSingleFile(project.driveFolderId, f, parts);
+        if (u) written++;
+        else unchanged++;
+      }
+      new Notice(this.formatTransferNotice("Uploaded", file.name, queue.length, written, unchanged));
     } catch (e) {
       new Notice(`Google Drive upload failed: ${(e as Error).message}`);
     }
+  }
+
+  /**
+   * Download a single file from the project's Drive folder, refreshing any
+   * media/notes the file directly embeds at the same time.
+   */
+  async downloadFileFromDrive(project: Project, file: TFile): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = project.driveLocalFolder;
+    if (!local) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      new Notice(`"${file.name}" isn't under the linked local folder.`);
+      return;
+    }
+    const mainParts = file.path.slice(local.length + 1).split("/");
+    new Notice(`Downloading "${file.name}" from Google Drive…`);
+    let written = 0;
+    let unchanged = 0;
+    let processed = 0;
+    let missing = 0;
+    try {
+      const mainResult = await this.downloadDrivePath(project, mainParts);
+      if (mainResult === "missing") {
+        new Notice(`"${file.name}" not found on Google Drive.`);
+        return;
+      }
+      processed++;
+      if (mainResult === "written") written++;
+      else unchanged++;
+
+      const fresh = this.app.vault.getAbstractFileByPath(file.path);
+      const attachments =
+        fresh instanceof TFile ? await this.collectEmbeddedFiles(fresh) : [];
+      const attachmentPathParts: string[][] = [];
+      for (const att of attachments) {
+        if (att.path !== `${local}/${att.name}` && !att.path.startsWith(`${local}/`)) continue;
+        attachmentPathParts.push(att.path.slice(local.length + 1).split("/"));
+      }
+      // Also try paths derived directly from linkpaths, for embeds whose
+      // attachment doesn't yet exist locally (first-time download).
+      const sourceContent = await this.readVaultBinaryAsText(file.path);
+      if (sourceContent !== null) {
+        for (const parts of this.driveLinkpathsToParts(sourceContent, file.path, local)) {
+          if (!attachmentPathParts.some((p) => p.join("/") === parts.join("/"))) {
+            attachmentPathParts.push(parts);
+          }
+        }
+      }
+      for (const parts of attachmentPathParts) {
+        if (parts.join("/") === mainParts.join("/")) continue;
+        const r = await this.downloadDrivePath(project, parts);
+        if (r === "missing") {
+          missing++;
+          continue;
+        }
+        processed++;
+        if (r === "written") written++;
+        else unchanged++;
+      }
+
+      let msg = this.formatTransferNotice("Downloaded", file.name, processed, written, unchanged);
+      if (missing > 0) msg += ` (${missing} embed${missing > 1 ? "s" : ""} not found on Drive)`;
+      new Notice(msg);
+      this.refreshContentView();
+    } catch (e) {
+      new Notice(`Google Drive download failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Download one Drive path under the project's linked folder, returning the outcome. */
+  private async downloadDrivePath(
+    project: Project,
+    parts: string[]
+  ): Promise<"written" | "unchanged" | "missing"> {
+    if (!project.driveFolderId || !project.driveLocalFolder) return "missing";
+    const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+    if (!child) return "missing";
+    const vaultDir = [project.driveLocalFolder, ...parts.slice(0, -1)]
+      .filter(Boolean)
+      .join("/");
+    const r = await this.drive.downloadChildTo(child, vaultDir);
+    if (!r) return "missing";
+    return r.written ? "written" : "unchanged";
+  }
+
+  /** Return `<path>` split on `/` after stripping `localFolder/`. Empty if outside. */
+  private relDirPartsUnder(filePath: string, localFolder: string): string[] {
+    if (!localFolder) return [];
+    if (!filePath.startsWith(`${localFolder}/`)) return [];
+    const parts = filePath.slice(localFolder.length + 1).split("/");
+    parts.pop();
+    return parts;
+  }
+
+  /** Collect direct embed targets (images, PDFs, media, embedded notes). */
+  private async collectEmbeddedFiles(file: TFile): Promise<TFile[]> {
+    if (file.extension !== "md") return [];
+    let text: string;
+    try {
+      text = await this.app.vault.read(file);
+    } catch {
+      return [];
+    }
+    const sourceDir = file.path.includes("/")
+      ? file.path.slice(0, file.path.lastIndexOf("/"))
+      : "";
+    const seen = new Set<string>();
+    const out: TFile[] = [];
+    for (const lp of this.parseEmbedLinkpaths(text)) {
+      const dest =
+        this.app.metadataCache.getFirstLinkpathDest(lp, file.path) ??
+        this.lookupVaultFile(lp, sourceDir);
+      if (!dest || dest.path === file.path || seen.has(dest.path)) continue;
+      seen.add(dest.path);
+      out.push(dest);
+    }
+    return out;
+  }
+
+  /** Extract embed linkpaths from markdown — wiki-style and standard-md image syntax. */
+  private parseEmbedLinkpaths(content: string): string[] {
+    const out: string[] = [];
+    for (const m of content.matchAll(/!\[\[([^\]\n]+?)(?:\|[^\]\n]*)?\]\]/g)) {
+      const p = m[1].split(/[#^]/)[0].trim();
+      if (p) out.push(p);
+    }
+    for (const m of content.matchAll(/!\[[^\]\n]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+      const u = m[1];
+      if (/^[a-z][a-z0-9+.-]*:/i.test(u)) continue;
+      out.push(decodeURIComponent(u.split("#")[0]));
+    }
+    return out;
+  }
+
+  /** Try linkpath as a literal vault path: from source's folder first, then root. */
+  private lookupVaultFile(linkpath: string, sourceDir: string): TFile | null {
+    const candidates = [
+      sourceDir ? `${sourceDir}/${linkpath}` : linkpath,
+      linkpath,
+    ];
+    for (const p of candidates) {
+      const af = this.app.vault.getAbstractFileByPath(p);
+      if (af instanceof TFile) return af;
+    }
+    return null;
+  }
+
+  /**
+   * Convert markdown embed linkpaths into Drive-relative path parts under
+   * `localFolder`, for embeds whose attachment doesn't exist locally yet.
+   * Skips linkpaths with no `/` (those need vault-aware short-name resolution).
+   */
+  private driveLinkpathsToParts(
+    content: string,
+    sourcePath: string,
+    localFolder: string
+  ): string[][] {
+    const sourceDir = sourcePath.includes("/")
+      ? sourcePath.slice(0, sourcePath.lastIndexOf("/"))
+      : "";
+    const out: string[][] = [];
+    for (const lp of this.parseEmbedLinkpaths(content)) {
+      if (!lp.includes("/")) continue;
+      const candidates = [
+        sourceDir ? `${sourceDir}/${lp}` : lp,
+        lp,
+      ];
+      for (const c of candidates) {
+        if (c !== localFolder && !c.startsWith(`${localFolder}/`)) continue;
+        out.push(c.slice(localFolder.length + 1).split("/"));
+        break;
+      }
+    }
+    return out;
+  }
+
+  /** Read a vault file as UTF-8 text; null if missing or unreadable. */
+  private async readVaultBinaryAsText(path: string): Promise<string | null> {
+    try {
+      const buf = await this.app.vault.adapter.readBinary(path);
+      return new TextDecoder().decode(buf);
+    } catch {
+      return null;
+    }
+  }
+
+  /** "Uploaded foo.md" / "Uploaded 5 file(s) with foo.md (1 unchanged)" etc. */
+  private formatTransferNotice(
+    verb: string,
+    primaryName: string,
+    processed: number,
+    written: number,
+    unchanged: number
+  ): string {
+    if (processed === 1) {
+      return written
+        ? `${verb} "${primaryName}".`
+        : `"${primaryName}" is already up to date.`;
+    }
+    const bits = [`${verb.toLowerCase()} ${written}`];
+    if (unchanged > 0) bits.push(`${unchanged} unchanged`);
+    return `"${primaryName}" + embeds: ${bits.join(", ")} of ${processed} file(s).`;
   }
 
   /** Link a project to an existing Drive folder (no upload/download performed). */
@@ -3520,6 +3742,12 @@ class ProjectContentView extends ItemView {
           .setTitle("Upload to Google Drive")
           .setIcon("cloud-upload")
           .onClick(() => void this.plugin.uploadFileToDrive(project, file))
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Download from Google Drive")
+          .setIcon("cloud-download")
+          .onClick(() => void this.plugin.downloadFileFromDrive(project, file))
       );
     }
     menu.addSeparator();

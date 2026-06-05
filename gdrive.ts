@@ -6,7 +6,7 @@ export interface GDriveAuthStore {
   gdriveRefreshToken: string;
 }
 
-interface DriveChild {
+export interface DriveChild {
   id: string;
   name: string;
   mimeType: string;
@@ -14,10 +14,11 @@ interface DriveChild {
   size?: string;
 }
 
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
+
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const SCOPE = "https://www.googleapis.com/auth/drive";
-const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 /** Map Google-native document types to an exportable format + extension. */
 const EXPORT_MAP: Record<string, { mime: string; ext: string }> = {
@@ -249,6 +250,32 @@ export class GoogleDriveClient {
     return (res.json as { name?: string }).name ?? "Google Drive";
   }
 
+  /** List a Drive folder's immediate children. */
+  async listFolder(folderId: string): Promise<DriveChild[]> {
+    return this.listChildren(folderId);
+  }
+
+  /** Resolve a path (relative to rootFolderId) to its Drive child, or null if missing. */
+  async findChildByPath(
+    rootFolderId: string,
+    parts: string[]
+  ): Promise<DriveChild | null> {
+    if (parts.length === 0) return null;
+    let currentId = rootFolderId;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      const isLast = i === parts.length - 1;
+      const children = await this.listChildren(currentId);
+      const match = isLast
+        ? children.find((c) => c.name === name)
+        : children.find((c) => c.name === name && c.mimeType === FOLDER_MIME);
+      if (!match) return null;
+      if (isLast) return match;
+      currentId = match.id;
+    }
+    return null;
+  }
+
   private async listChildren(folderId: string): Promise<DriveChild[]> {
     const out: DriveChild[] = [];
     let pageToken = "";
@@ -303,6 +330,33 @@ export class GoogleDriveClient {
       count++;
     }
     return count;
+  }
+
+  /**
+   * Download one Drive file into `vaultDir`. Returns the written filename and
+   * whether anything was written (skipped when local md5 already matches).
+   * Returns null for unsupported Google-native types.
+   */
+  async downloadChildTo(
+    child: DriveChild,
+    vaultDir: string
+  ): Promise<{ name: string; written: boolean } | null> {
+    if (child.mimeType === FOLDER_MIME) return null;
+    await this.ensureDir(vaultDir);
+    const adapter = this.app.vault.adapter;
+    if (child.md5Checksum) {
+      const targetPath = `${vaultDir}/${sanitizeName(child.name)}`;
+      if (await adapter.exists(targetPath)) {
+        const localMd5 = md5Hex(await adapter.readBinary(targetPath));
+        if (localMd5 === child.md5Checksum) {
+          return { name: sanitizeName(child.name), written: false };
+        }
+      }
+    }
+    const dl = await this.downloadFile(child);
+    if (!dl) return null;
+    await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
+    return { name: dl.name, written: true };
   }
 
   private async downloadFile(
