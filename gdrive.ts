@@ -10,6 +10,8 @@ interface DriveChild {
   id: string;
   name: string;
   mimeType: string;
+  md5Checksum?: string;
+  size?: string;
 }
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -40,6 +42,12 @@ function getNode<T = unknown>(mod: string): T | null {
 
 function sanitizeName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "untitled";
+}
+
+function md5Hex(data: ArrayBuffer): string | null {
+  const crypto = getNode<typeof import("crypto")>("crypto");
+  if (!crypto) return null;
+  return crypto.createHash("md5").update(Buffer.from(data)).digest("hex");
 }
 
 function encodeForm(data: Record<string, string>): string {
@@ -248,7 +256,7 @@ export class GoogleDriveClient {
       const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
       const url =
         `https://www.googleapis.com/drive/v3/files?q=${q}` +
-        `&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000` +
+        `&fields=nextPageToken,files(id,name,mimeType,md5Checksum,size)&pageSize=1000` +
         `&supportsAllDrives=true&includeItemsFromAllDrives=true` +
         (pageToken ? `&pageToken=${pageToken}` : "");
       const res = await this.api(url);
@@ -358,20 +366,28 @@ export class GoogleDriveClient {
     return current;
   }
 
-  /** Upload (create or update) one file into rootFolderId/<relDirParts>. */
+  /** Upload (create or update) one file into rootFolderId/<relDirParts>. Returns true if uploaded, false if skipped as unchanged. */
   async uploadSingleFile(
     rootFolderId: string,
     file: TFile,
     relDirParts: string[]
-  ): Promise<void> {
+  ): Promise<boolean> {
     const parentId = await this.ensureSubfolder(rootFolderId, relDirParts);
     const data = await this.app.vault.readBinary(file);
     const children = await this.listChildren(parentId);
     const match = children.find(
       (c) => c.name === file.name && c.mimeType !== FOLDER_MIME
     );
-    if (match) await this.updateFileContent(match.id, data);
-    else await this.createFile(file.name, parentId, data);
+    if (match) {
+      const localMd5 = md5Hex(data);
+      if (localMd5 && match.md5Checksum && localMd5 === match.md5Checksum) {
+        return false;
+      }
+      await this.updateFileContent(match.id, data);
+    } else {
+      await this.createFile(file.name, parentId, data);
+    }
+    return true;
   }
 
   /** Create a new Drive folder named `name` under `parentId`, upload `vaultDir` into it, return the new folder's id. */
@@ -404,6 +420,10 @@ export class GoogleDriveClient {
         const data = await this.app.vault.readBinary(child);
         const match = byName.get(child.name);
         if (match && match.mimeType !== FOLDER_MIME) {
+          const localMd5 = md5Hex(data);
+          if (localMd5 && match.md5Checksum && localMd5 === match.md5Checksum) {
+            continue;
+          }
           await this.updateFileContent(match.id, data);
         } else {
           await this.createFile(child.name, folderId, data);

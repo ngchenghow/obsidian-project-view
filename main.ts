@@ -2362,8 +2362,12 @@ export default class RecentViewPlugin extends Plugin {
     }
     new Notice(`Uploading "${file.name}" to Google Drive…`);
     try {
-      await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
-      new Notice(`Uploaded "${file.name}" to Google Drive.`);
+      const uploaded = await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
+      new Notice(
+        uploaded
+          ? `Uploaded "${file.name}" to Google Drive.`
+          : `"${file.name}" is already up to date on Google Drive.`
+      );
     } catch (e) {
       new Notice(`Google Drive upload failed: ${(e as Error).message}`);
     }
