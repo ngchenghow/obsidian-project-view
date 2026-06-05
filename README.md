@@ -1,3 +1,5 @@
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/3fbad89a-3917-45d5-bcdf-81fbdab5ef8f" />
+
 # ProjectView
 
 An [Obsidian](https://obsidian.md) plugin that organizes your notes into **projects**. Each project keeps its own set of folders and notes, remembers the tabs you had open, and can sync with a Google Drive folder.
