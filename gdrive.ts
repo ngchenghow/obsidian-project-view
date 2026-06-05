@@ -277,9 +277,10 @@ export class GoogleDriveClient {
     }
   }
 
-  /** Recursively download a Drive folder into a vault directory. */
+  /** Recursively download a Drive folder into a vault directory. Files whose local md5 already matches Drive's are skipped. */
   async downloadFolder(folderId: string, vaultDir: string): Promise<number> {
     await this.ensureDir(vaultDir);
+    const adapter = this.app.vault.adapter;
     let count = 0;
     for (const child of await this.listChildren(folderId)) {
       if (child.mimeType === FOLDER_MIME) {
@@ -289,9 +290,16 @@ export class GoogleDriveClient {
         );
         continue;
       }
+      if (child.md5Checksum) {
+        const targetPath = `${vaultDir}/${sanitizeName(child.name)}`;
+        if (await adapter.exists(targetPath)) {
+          const localMd5 = md5Hex(await adapter.readBinary(targetPath));
+          if (localMd5 === child.md5Checksum) continue;
+        }
+      }
       const dl = await this.downloadFile(child);
       if (!dl) continue;
-      await this.app.vault.adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
+      await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
       count++;
     }
     return count;
