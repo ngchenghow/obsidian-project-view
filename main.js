@@ -27,10 +27,10 @@ var import_obsidian2 = require("obsidian");
 
 // gdrive.ts
 var import_obsidian = require("obsidian");
+var FOLDER_MIME = "application/vnd.google-apps.folder";
 var TOKEN_URL = "https://oauth2.googleapis.com/token";
 var AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 var SCOPE = "https://www.googleapis.com/auth/drive";
-var FOLDER_MIME = "application/vnd.google-apps.folder";
 var EXPORT_MAP = {
   "application/vnd.google-apps.document": { mime: "text/markdown", ext: "md" },
   "application/vnd.google-apps.spreadsheet": { mime: "text/csv", ext: "csv" },
@@ -51,6 +51,12 @@ function getNode(mod) {
 }
 function sanitizeName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "untitled";
+}
+function md5Hex(data) {
+  const crypto = getNode("crypto");
+  if (!crypto)
+    return null;
+  return crypto.createHash("md5").update(Buffer.from(data)).digest("hex");
 }
 function encodeForm(data) {
   return Object.entries(data).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
@@ -232,13 +238,35 @@ var GoogleDriveClient = class {
     );
     return (_a = res.json.name) != null ? _a : "Google Drive";
   }
+  /** List a Drive folder's immediate children. */
+  async listFolder(folderId) {
+    return this.listChildren(folderId);
+  }
+  /** Resolve a path (relative to rootFolderId) to its Drive child, or null if missing. */
+  async findChildByPath(rootFolderId, parts) {
+    if (parts.length === 0)
+      return null;
+    let currentId = rootFolderId;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      const isLast = i === parts.length - 1;
+      const children = await this.listChildren(currentId);
+      const match = isLast ? children.find((c) => c.name === name) : children.find((c) => c.name === name && c.mimeType === FOLDER_MIME);
+      if (!match)
+        return null;
+      if (isLast)
+        return match;
+      currentId = match.id;
+    }
+    return null;
+  }
   async listChildren(folderId) {
     var _a, _b;
     const out = [];
     let pageToken = "";
     do {
       const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
-      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true` + (pageToken ? `&pageToken=${pageToken}` : "");
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name,mimeType,md5Checksum,size)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true` + (pageToken ? `&pageToken=${pageToken}` : "");
       const res = await this.api(url);
       const json = res.json;
       out.push(...(_a = json.files) != null ? _a : []);
@@ -256,9 +284,10 @@ var GoogleDriveClient = class {
         await adapter.mkdir(cur);
     }
   }
-  /** Recursively download a Drive folder into a vault directory. */
+  /** Recursively download a Drive folder into a vault directory. Files whose local md5 already matches Drive's are skipped. */
   async downloadFolder(folderId, vaultDir) {
     await this.ensureDir(vaultDir);
+    const adapter = this.app.vault.adapter;
     let count = 0;
     for (const child of await this.listChildren(folderId)) {
       if (child.mimeType === FOLDER_MIME) {
@@ -268,13 +297,46 @@ var GoogleDriveClient = class {
         );
         continue;
       }
+      if (child.md5Checksum) {
+        const targetPath = `${vaultDir}/${sanitizeName(child.name)}`;
+        if (await adapter.exists(targetPath)) {
+          const localMd5 = md5Hex(await adapter.readBinary(targetPath));
+          if (localMd5 === child.md5Checksum)
+            continue;
+        }
+      }
       const dl = await this.downloadFile(child);
       if (!dl)
         continue;
-      await this.app.vault.adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
+      await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
       count++;
     }
     return count;
+  }
+  /**
+   * Download one Drive file into `vaultDir`. Returns the written filename and
+   * whether anything was written (skipped when local md5 already matches).
+   * Returns null for unsupported Google-native types.
+   */
+  async downloadChildTo(child, vaultDir) {
+    if (child.mimeType === FOLDER_MIME)
+      return null;
+    await this.ensureDir(vaultDir);
+    const adapter = this.app.vault.adapter;
+    if (child.md5Checksum) {
+      const targetPath = `${vaultDir}/${sanitizeName(child.name)}`;
+      if (await adapter.exists(targetPath)) {
+        const localMd5 = md5Hex(await adapter.readBinary(targetPath));
+        if (localMd5 === child.md5Checksum) {
+          return { name: sanitizeName(child.name), written: false };
+        }
+      }
+    }
+    const dl = await this.downloadFile(child);
+    if (!dl)
+      return null;
+    await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
+    return { name: dl.name, written: true };
   }
   async downloadFile(child) {
     let url;
@@ -333,7 +395,7 @@ var GoogleDriveClient = class {
     }
     return current;
   }
-  /** Upload (create or update) one file into rootFolderId/<relDirParts>. */
+  /** Upload (create or update) one file into rootFolderId/<relDirParts>. Returns true if uploaded, false if skipped as unchanged. */
   async uploadSingleFile(rootFolderId, file, relDirParts) {
     const parentId = await this.ensureSubfolder(rootFolderId, relDirParts);
     const data = await this.app.vault.readBinary(file);
@@ -341,10 +403,16 @@ var GoogleDriveClient = class {
     const match = children.find(
       (c) => c.name === file.name && c.mimeType !== FOLDER_MIME
     );
-    if (match)
+    if (match) {
+      const localMd5 = md5Hex(data);
+      if (localMd5 && match.md5Checksum && localMd5 === match.md5Checksum) {
+        return false;
+      }
       await this.updateFileContent(match.id, data);
-    else
+    } else {
       await this.createFile(file.name, parentId, data);
+    }
+    return true;
   }
   /** Create a new Drive folder named `name` under `parentId`, upload `vaultDir` into it, return the new folder's id. */
   async uploadFolderAsNew(name, parentId, vaultDir) {
@@ -369,6 +437,10 @@ var GoogleDriveClient = class {
         const data = await this.app.vault.readBinary(child);
         const match = byName.get(child.name);
         if (match && match.mimeType !== FOLDER_MIME) {
+          const localMd5 = md5Hex(data);
+          if (localMd5 && match.md5Checksum && localMd5 === match.md5Checksum) {
+            continue;
+          }
           await this.updateFileContent(match.id, data);
         } else {
           await this.createFile(child.name, folderId, data);
@@ -2293,7 +2365,10 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     }
     await this.openNoteInPane(project, targetPaneId, file);
   }
-  /** Upload a single file to its matching place in the project's Drive folder. */
+  /**
+   * Upload a single file to its matching place in the project's Drive folder,
+   * along with any media/notes the file directly embeds (images, PDFs, etc).
+   */
   async uploadFileToDrive(project, file) {
     var _a;
     if (!isDesktop()) {
@@ -2309,19 +2384,230 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       return;
     }
     const local = (_a = project.driveLocalFolder) != null ? _a : "";
-    let dirParts = [];
-    if (local && file.path.startsWith(local + "/")) {
-      const parts = file.path.slice(local.length + 1).split("/");
-      parts.pop();
-      dirParts = parts;
-    }
+    const mainParts = this.relDirPartsUnder(file.path, local);
     new import_obsidian2.Notice(`Uploading "${file.name}" to Google Drive\u2026`);
+    const queue = [{ f: file, parts: mainParts }];
+    for (const att of await this.collectEmbeddedFiles(file)) {
+      if (!local)
+        continue;
+      if (att.path !== `${local}/${att.name}` && !att.path.startsWith(`${local}/`))
+        continue;
+      queue.push({ f: att, parts: this.relDirPartsUnder(att.path, local) });
+    }
+    let written = 0;
+    let unchanged = 0;
     try {
-      await this.drive.uploadSingleFile(project.driveFolderId, file, dirParts);
-      new import_obsidian2.Notice(`Uploaded "${file.name}" to Google Drive.`);
+      for (const { f, parts } of queue) {
+        const u = await this.drive.uploadSingleFile(project.driveFolderId, f, parts);
+        if (u)
+          written++;
+        else
+          unchanged++;
+      }
+      new import_obsidian2.Notice(this.formatTransferNotice("Uploaded", file.name, queue.length, written, unchanged));
     } catch (e) {
       new import_obsidian2.Notice(`Google Drive upload failed: ${e.message}`);
     }
+  }
+  /**
+   * Download a single file from the project's Drive folder, refreshing any
+   * media/notes the file directly embeds at the same time.
+   */
+  async downloadFileFromDrive(project, file) {
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = project.driveLocalFolder;
+    if (!local) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      new import_obsidian2.Notice(`"${file.name}" isn't under the linked local folder.`);
+      return;
+    }
+    const mainParts = file.path.slice(local.length + 1).split("/");
+    new import_obsidian2.Notice(`Downloading "${file.name}" from Google Drive\u2026`);
+    let written = 0;
+    let unchanged = 0;
+    let processed = 0;
+    let missing = 0;
+    try {
+      const mainResult = await this.downloadDrivePath(project, mainParts);
+      if (mainResult === "missing") {
+        new import_obsidian2.Notice(`"${file.name}" not found on Google Drive.`);
+        return;
+      }
+      processed++;
+      if (mainResult === "written")
+        written++;
+      else
+        unchanged++;
+      const fresh = this.app.vault.getAbstractFileByPath(file.path);
+      const attachments = fresh instanceof import_obsidian2.TFile ? await this.collectEmbeddedFiles(fresh) : [];
+      const attachmentPathParts = [];
+      for (const att of attachments) {
+        if (att.path !== `${local}/${att.name}` && !att.path.startsWith(`${local}/`))
+          continue;
+        attachmentPathParts.push(att.path.slice(local.length + 1).split("/"));
+      }
+      const sourceContent = await this.readVaultBinaryAsText(file.path);
+      if (sourceContent !== null) {
+        for (const parts of this.driveLinkpathsToParts(sourceContent, file.path, local)) {
+          if (!attachmentPathParts.some((p) => p.join("/") === parts.join("/"))) {
+            attachmentPathParts.push(parts);
+          }
+        }
+      }
+      for (const parts of attachmentPathParts) {
+        if (parts.join("/") === mainParts.join("/"))
+          continue;
+        const r = await this.downloadDrivePath(project, parts);
+        if (r === "missing") {
+          missing++;
+          continue;
+        }
+        processed++;
+        if (r === "written")
+          written++;
+        else
+          unchanged++;
+      }
+      let msg = this.formatTransferNotice("Downloaded", file.name, processed, written, unchanged);
+      if (missing > 0)
+        msg += ` (${missing} embed${missing > 1 ? "s" : ""} not found on Drive)`;
+      new import_obsidian2.Notice(msg);
+      this.refreshContentView();
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive download failed: ${e.message}`);
+    }
+  }
+  /** Download one Drive path under the project's linked folder, returning the outcome. */
+  async downloadDrivePath(project, parts) {
+    if (!project.driveFolderId || !project.driveLocalFolder)
+      return "missing";
+    const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+    if (!child)
+      return "missing";
+    const vaultDir = [project.driveLocalFolder, ...parts.slice(0, -1)].filter(Boolean).join("/");
+    const r = await this.drive.downloadChildTo(child, vaultDir);
+    if (!r)
+      return "missing";
+    return r.written ? "written" : "unchanged";
+  }
+  /** Return `<path>` split on `/` after stripping `localFolder/`. Empty if outside. */
+  relDirPartsUnder(filePath, localFolder) {
+    if (!localFolder)
+      return [];
+    if (!filePath.startsWith(`${localFolder}/`))
+      return [];
+    const parts = filePath.slice(localFolder.length + 1).split("/");
+    parts.pop();
+    return parts;
+  }
+  /** Collect direct embed targets (images, PDFs, media, embedded notes). */
+  async collectEmbeddedFiles(file) {
+    var _a;
+    if (file.extension !== "md")
+      return [];
+    let text;
+    try {
+      text = await this.app.vault.read(file);
+    } catch (e) {
+      return [];
+    }
+    const sourceDir = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const lp of this.parseEmbedLinkpaths(text)) {
+      const dest = (_a = this.app.metadataCache.getFirstLinkpathDest(lp, file.path)) != null ? _a : this.lookupVaultFile(lp, sourceDir);
+      if (!dest || dest.path === file.path || seen.has(dest.path))
+        continue;
+      seen.add(dest.path);
+      out.push(dest);
+    }
+    return out;
+  }
+  /** Extract embed linkpaths from markdown — wiki-style and standard-md image syntax. */
+  parseEmbedLinkpaths(content) {
+    const out = [];
+    for (const m of content.matchAll(/!\[\[([^\]\n]+?)(?:\|[^\]\n]*)?\]\]/g)) {
+      const p = m[1].split(/[#^]/)[0].trim();
+      if (p)
+        out.push(p);
+    }
+    for (const m of content.matchAll(/!\[[^\]\n]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+      const u = m[1];
+      if (/^[a-z][a-z0-9+.-]*:/i.test(u))
+        continue;
+      out.push(decodeURIComponent(u.split("#")[0]));
+    }
+    return out;
+  }
+  /** Try linkpath as a literal vault path: from source's folder first, then root. */
+  lookupVaultFile(linkpath, sourceDir) {
+    const candidates = [
+      sourceDir ? `${sourceDir}/${linkpath}` : linkpath,
+      linkpath
+    ];
+    for (const p of candidates) {
+      const af = this.app.vault.getAbstractFileByPath(p);
+      if (af instanceof import_obsidian2.TFile)
+        return af;
+    }
+    return null;
+  }
+  /**
+   * Convert markdown embed linkpaths into Drive-relative path parts under
+   * `localFolder`, for embeds whose attachment doesn't exist locally yet.
+   * Skips linkpaths with no `/` (those need vault-aware short-name resolution).
+   */
+  driveLinkpathsToParts(content, sourcePath, localFolder) {
+    const sourceDir = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
+    const out = [];
+    for (const lp of this.parseEmbedLinkpaths(content)) {
+      if (!lp.includes("/"))
+        continue;
+      const candidates = [
+        sourceDir ? `${sourceDir}/${lp}` : lp,
+        lp
+      ];
+      for (const c of candidates) {
+        if (c !== localFolder && !c.startsWith(`${localFolder}/`))
+          continue;
+        out.push(c.slice(localFolder.length + 1).split("/"));
+        break;
+      }
+    }
+    return out;
+  }
+  /** Read a vault file as UTF-8 text; null if missing or unreadable. */
+  async readVaultBinaryAsText(path) {
+    try {
+      const buf = await this.app.vault.adapter.readBinary(path);
+      return new TextDecoder().decode(buf);
+    } catch (e) {
+      return null;
+    }
+  }
+  /** "Uploaded foo.md" / "Uploaded 5 file(s) with foo.md (1 unchanged)" etc. */
+  formatTransferNotice(verb, primaryName, processed, written, unchanged) {
+    if (processed === 1) {
+      return written ? `${verb} "${primaryName}".` : `"${primaryName}" is already up to date.`;
+    }
+    const bits = [`${verb.toLowerCase()} ${written}`];
+    if (unchanged > 0)
+      bits.push(`${unchanged} unchanged`);
+    return `"${primaryName}" + embeds: ${bits.join(", ")} of ${processed} file(s).`;
   }
   /** Link a project to an existing Drive folder (no upload/download performed). */
   async linkProjectToDrive(project, folderId, localFolder) {
@@ -3218,6 +3504,9 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     if (project == null ? void 0 : project.driveFolderId) {
       menu.addItem(
         (i) => i.setTitle("Upload to Google Drive").setIcon("cloud-upload").onClick(() => void this.plugin.uploadFileToDrive(project, file))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Download from Google Drive").setIcon("cloud-download").onClick(() => void this.plugin.downloadFileFromDrive(project, file))
       );
     }
     menu.addSeparator();
