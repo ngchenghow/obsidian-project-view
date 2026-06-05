@@ -1,4 +1,5 @@
-<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/3fbad89a-3917-45d5-bcdf-81fbdab5ef8f" />
+<img width="341" height="478" alt="image" src="https://github.com/user-attachments/assets/8e71ba62-98b0-464f-bd7f-ef73078ee388" />
+
 
 # ProjectView
 
