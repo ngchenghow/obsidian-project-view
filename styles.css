@@ -189,6 +189,7 @@
 
 .rv-folder-section {
   margin: 8px 0;
+  padding-left: calc(var(--rv-depth, 0) * 14px);
 }
 
 .rv-folder-head {
@@ -546,4 +547,40 @@
 
 .rv-edit-time {
   flex-shrink: 0;
+}
+
+/* Utility classes replacing inline styles. */
+
+/* Disable clicks on a pane while a menu is open over it. */
+.rv-pointer-blocked {
+  pointer-events: none;
+}
+
+/* Used to hide the workspace root while panes are being rebuilt. */
+.rv-hidden {
+  visibility: hidden;
+}
+
+/* Filled-and-shrinkable pane shown as the active project's group. */
+.rv-pane-active {
+  display: flex;
+  flex-grow: 1;
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-width: 0;
+  width: auto;
+}
+
+.rv-pane-inactive {
+  display: none;
+}
+
+/* Tree-row padding driven by --rv-depth (set via setCssProps). */
+.rv-tree-row {
+  padding-left: calc(8px + var(--rv-depth, 0) * 14px);
+}
+
+/* Collapse a tree-children wrapper. */
+.rv-collapsed {
+  display: none;
 }

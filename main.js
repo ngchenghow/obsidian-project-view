@@ -566,11 +566,10 @@ function parseDataNote(content) {
 }
 function showMenu(menu, event, paneEl, btn) {
   btn == null ? void 0 : btn.addClass("is-active");
-  const prevPointerEvents = paneEl.style.pointerEvents;
-  paneEl.style.pointerEvents = "none";
+  paneEl.addClass("rv-pointer-blocked");
   menu.onHide(() => {
     btn == null ? void 0 : btn.removeClass("is-active");
-    paneEl.style.pointerEvents = prevPointerEvents;
+    paneEl.removeClass("rv-pointer-blocked");
   });
   menu.showAtMouseEvent(event);
 }
@@ -982,7 +981,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         );
         if (titleEl) {
           titleEl.focus();
-          (_a = document.getSelection()) == null ? void 0 : _a.selectAllChildren(titleEl);
+          (_a = activeDocument.getSelection()) == null ? void 0 : _a.selectAllChildren(titleEl);
         }
       }, 50);
     } catch (e) {
@@ -1027,7 +1026,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         );
         if (titleEl) {
           titleEl.focus();
-          (_a = document.getSelection()) == null ? void 0 : _a.selectAllChildren(titleEl);
+          (_a = activeDocument.getSelection()) == null ? void 0 : _a.selectAllChildren(titleEl);
         }
       }, 50);
     } catch (e) {
@@ -1152,7 +1151,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       }
       await leaf.setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
   /**
    * Dock the Projects list above the native File Explorer in the left sidebar
@@ -1177,7 +1176,13 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     const parent = listLeaf.parent;
     const editsLeaf = workspace.createLeafInParent(parent, 1);
     void editsLeaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: false });
-    void listLeaf.setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true }).then(() => workspace.revealLeaf(listLeaf));
+    void (async () => {
+      await listLeaf.setViewState({
+        type: VIEW_TYPE_PROJECT_LIST,
+        active: true
+      });
+      await workspace.revealLeaf(listLeaf);
+    })();
   }
   async activateEditsView() {
     const { workspace } = this.app;
@@ -1195,7 +1200,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       }
       await leaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
   refreshEditView() {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS)) {
@@ -1251,7 +1256,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         return;
     }
     const extend = !!top && this.editRegionActive && sameNote && adjacent;
-    const baseline = extend ? (_a = this.editBaselineByRecord.get(top)) != null ? _a : this.lastEditDoc : this.lastEditDoc;
+    const baseline = extend && top ? (_a = this.editBaselineByRecord.get(top)) != null ? _a : this.lastEditDoc : this.lastEditDoc;
     const { added, removed, start, endNew } = diffEdit(baseline, current);
     if (!added && !removed) {
       this.lastEditDoc = current;
@@ -1432,7 +1437,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         active: true
       });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
     this.refreshContentView();
   }
   refreshListView() {
@@ -1495,7 +1500,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
   restoreOnStartup() {
     const rootEl = this.app.workspace.rootSplit.containerEl;
     if (rootEl)
-      rootEl.style.visibility = "hidden";
+      rootEl.addClass("rv-hidden");
     window.setTimeout(() => void this.settleStartup(rootEl), 300);
   }
   async settleStartup(rootEl) {
@@ -1506,7 +1511,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     } finally {
       this.starting = false;
       if (rootEl)
-        rootEl.style.visibility = "";
+        rootEl.removeClass("rv-hidden");
     }
   }
   /** Detach any main-area leaf that isn't part of the active project's pane. */
@@ -1701,7 +1706,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       let group = this.getLiveGroup(key);
       if (!group) {
         if (rootEl)
-          rootEl.style.visibility = "hidden";
+          rootEl.addClass("rv-hidden");
         group = await this.createPaneGroup(project, paneId, gen);
       }
       if (gen !== this._showPaneGen)
@@ -1730,7 +1735,7 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       console.error("[RecentView] failed to open pane", e);
     } finally {
       if (gen === this._showPaneGen && rootEl)
-        rootEl.style.visibility = "";
+        rootEl.removeClass("rv-hidden");
     }
     await this.persist();
     window.setTimeout(() => {
@@ -2000,14 +2005,11 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         continue;
       }
       if (projectId === activeId) {
-        el.style.display = "";
-        el.style.flexGrow = "1";
-        el.style.flexShrink = "1";
-        el.style.flexBasis = "0";
-        el.style.minWidth = "0";
-        el.style.width = "";
+        el.removeClass("rv-pane-inactive");
+        el.addClass("rv-pane-active");
       } else {
-        el.style.display = "none";
+        el.removeClass("rv-pane-active");
+        el.addClass("rv-pane-inactive");
       }
     }
   }
@@ -3396,7 +3398,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
   renderFolderSection(container, project, folder, depth, projectFolderPath) {
     const section = container.createDiv({ cls: "rv-folder-section" });
     if (depth > 0)
-      section.style.paddingLeft = `${depth * 14}px`;
+      section.setCssProps({ "--rv-depth": String(depth) });
     const head = section.createDiv({ cls: "rv-folder-head" });
     (0, import_obsidian2.setIcon)(head.createSpan({ cls: "rv-folder-icon" }), "folder");
     head.createSpan({ text: folder.name });
@@ -3527,7 +3529,7 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
     const existing = this.findLeafForFile(file, group);
     if (existing) {
       workspace.setActiveLeaf(existing, { focus: true });
-      workspace.revealLeaf(existing);
+      void workspace.revealLeaf(existing);
       return;
     }
     if (group)
@@ -3838,11 +3840,27 @@ var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
   }
   /** Pick any folder in the vault. */
   static pickFolder(app, onChoose, opts = {}) {
-    return new _VaultTreeModal(app, "folder", (i) => onChoose(i), opts);
+    return new _VaultTreeModal(
+      app,
+      "folder",
+      (i) => {
+        if (i instanceof import_obsidian2.TFolder)
+          onChoose(i);
+      },
+      opts
+    );
   }
   /** Pick any markdown note in the vault. */
   static pickNote(app, onChoose, opts = {}) {
-    return new _VaultTreeModal(app, "note", (i) => onChoose(i), opts);
+    return new _VaultTreeModal(
+      app,
+      "note",
+      (i) => {
+        if (i instanceof import_obsidian2.TFile)
+          onChoose(i);
+      },
+      opts
+    );
   }
   onOpen() {
     const { contentEl } = this;
@@ -3859,7 +3877,7 @@ var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
     const root = this.app.vault.getRoot();
     if (this.mode === "folder") {
       const row = tree.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-      row.style.paddingLeft = "8px";
+      row.setCssProps({ "--rv-depth": "0" });
       row.createSpan({ cls: "rv-tree-twirl" });
       (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "folder");
       row.createSpan({ cls: "rv-file-name", text: "/ (vault root)" });
@@ -3898,7 +3916,7 @@ var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
   }
   renderFolderRow(container, folder, depth) {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     const expandable = this.hasExpandableChildren(folder);
     const twirl = row.createSpan({ cls: "rv-tree-twirl" });
     if (expandable)
@@ -3917,11 +3935,11 @@ var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
           row.after(childrenWrap);
           this.renderChildren(childrenWrap, folder, depth + 1);
         }
-        childrenWrap.style.display = "";
+        childrenWrap.removeClass("rv-collapsed");
         (0, import_obsidian2.setIcon)(twirl, "chevron-down");
       } else {
         if (childrenWrap)
-          childrenWrap.style.display = "none";
+          childrenWrap.addClass("rv-collapsed");
         (0, import_obsidian2.setIcon)(twirl, "chevron-right");
       }
     };
@@ -3938,7 +3956,7 @@ var VaultTreeModal = class _VaultTreeModal extends import_obsidian2.Modal {
     if ((_a = this.opts.excludePaths) == null ? void 0 : _a.has(file.path))
       return;
     const row = container.createDiv({ cls: "rv-tree-row" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     row.createSpan({ cls: "rv-tree-twirl" });
     (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "file");
     row.createSpan({ cls: "rv-file-name", text: file.basename });
@@ -4030,7 +4048,7 @@ var ProjectTreeModal = class extends import_obsidian2.Modal {
   }
   renderFolder(container, folder, depth) {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "folder");
     row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
     row.setAttribute("aria-label", `Open all notes in ${folder.path}`);
@@ -4048,7 +4066,7 @@ var ProjectTreeModal = class extends import_obsidian2.Modal {
   }
   renderFile(container, file, depth) {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-file" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     (0, import_obsidian2.setIcon)(row.createSpan({ cls: "rv-file-icon" }), "file");
     row.createSpan({ cls: "rv-file-name", text: file.basename });
     row.setAttribute("aria-label", `Open ${file.path}`);
@@ -4239,6 +4257,10 @@ var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
     this.plugin = plugin;
   }
   display() {
+    this.renderSettings();
+  }
+  /** Build the settings UI. Use this instead of calling `display()` internally. */
+  renderSettings() {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian2.Setting(containerEl).setName("Data note path").setDesc(
@@ -4313,7 +4335,7 @@ var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
           new import_obsidian2.Notice("Opening Google sign-in in your browser\u2026");
           await this.plugin.drive.connect();
           new import_obsidian2.Notice("Connected to Google Drive.");
-          this.display();
+          this.renderSettings();
         } catch (e) {
           console.error("[RecentView] Google Drive connect failed", e);
           new import_obsidian2.Notice(`Google Drive connect failed: ${e.message}`, 12e3);
@@ -4322,7 +4344,7 @@ var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
     ).addExtraButton(
       (b) => b.setIcon("log-out").setTooltip("Disconnect").onClick(async () => {
         await this.plugin.drive.disconnect();
-        this.display();
+        this.renderSettings();
       })
     );
   }

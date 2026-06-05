@@ -256,11 +256,10 @@ function showMenu(
   btn?: HTMLElement
 ): void {
   btn?.addClass("is-active");
-  const prevPointerEvents = paneEl.style.pointerEvents;
-  paneEl.style.pointerEvents = "none";
+  paneEl.addClass("rv-pointer-blocked");
   menu.onHide(() => {
     btn?.removeClass("is-active");
-    paneEl.style.pointerEvents = prevPointerEvents;
+    paneEl.removeClass("rv-pointer-blocked");
   });
   menu.showAtMouseEvent(event);
 }
@@ -754,7 +753,7 @@ export default class RecentViewPlugin extends Plugin {
         );
         if (titleEl) {
           titleEl.focus();
-          document.getSelection()?.selectAllChildren(titleEl);
+          activeDocument.getSelection()?.selectAllChildren(titleEl);
         }
       }, 50);
     } catch (e) {
@@ -803,7 +802,7 @@ export default class RecentViewPlugin extends Plugin {
         );
         if (titleEl) {
           titleEl.focus();
-          document.getSelection()?.selectAllChildren(titleEl);
+          activeDocument.getSelection()?.selectAllChildren(titleEl);
         }
       }, 50);
     } catch (e) {
@@ -932,7 +931,7 @@ export default class RecentViewPlugin extends Plugin {
       }
       await leaf.setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
 
   /**
@@ -961,9 +960,13 @@ export default class RecentViewPlugin extends Plugin {
     const editsLeaf = workspace.createLeafInParent(parent, 1);
     void editsLeaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: false });
     // Show the Projects pane as the active tab at startup.
-    void listLeaf
-      .setViewState({ type: VIEW_TYPE_PROJECT_LIST, active: true })
-      .then(() => workspace.revealLeaf(listLeaf));
+    void (async () => {
+      await listLeaf.setViewState({
+        type: VIEW_TYPE_PROJECT_LIST,
+        active: true,
+      });
+      await workspace.revealLeaf(listLeaf);
+    })();
   }
 
   async activateEditsView(): Promise<void> {
@@ -983,7 +986,7 @@ export default class RecentViewPlugin extends Plugin {
       }
       await leaf.setViewState({ type: VIEW_TYPE_RECENT_EDITS, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
 
   refreshEditView(): void {
@@ -1055,9 +1058,10 @@ export default class RecentViewPlugin extends Plugin {
     // Baseline: an extended edit keeps its original starting document (so the
     // edit stays "the same" across tab switches); a new edit starts from the
     // document just before this change.
-    const baseline = extend
-      ? this.editBaselineByRecord.get(top!) ?? this.lastEditDoc
-      : this.lastEditDoc;
+    const baseline =
+      extend && top
+        ? this.editBaselineByRecord.get(top) ?? this.lastEditDoc
+        : this.lastEditDoc;
 
     // Categorize the single edit by its net change: where it started (its
     // baseline) vs the finished version (current).
@@ -1260,7 +1264,7 @@ export default class RecentViewPlugin extends Plugin {
         active: true,
       });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
     this.refreshContentView();
   }
 
@@ -1329,7 +1333,7 @@ export default class RecentViewPlugin extends Plugin {
     const rootEl = (
       this.app.workspace.rootSplit as unknown as { containerEl?: HTMLElement }
     ).containerEl;
-    if (rootEl) rootEl.style.visibility = "hidden";
+    if (rootEl) rootEl.addClass("rv-hidden");
     window.setTimeout(() => void this.settleStartup(rootEl), 300);
   }
 
@@ -1343,7 +1347,7 @@ export default class RecentViewPlugin extends Plugin {
     } finally {
       // Keep ignoring layout-change until consolidation is fully done.
       this.starting = false;
-      if (rootEl) rootEl.style.visibility = "";
+      if (rootEl) rootEl.removeClass("rv-hidden");
     }
   }
 
@@ -1582,7 +1586,7 @@ export default class RecentViewPlugin extends Plugin {
       if (!group) {
         // Hide the root while building so the new split never appears alongside
         // the current pane during the async openFile sequence.
-        if (rootEl) rootEl.style.visibility = "hidden";
+        if (rootEl) rootEl.addClass("rv-hidden");
         group = await this.createPaneGroup(project, paneId, gen);
       }
       // A newer click arrived while we were building; createPaneGroup already
@@ -1615,7 +1619,7 @@ export default class RecentViewPlugin extends Plugin {
     } finally {
       // Only reveal the root if this switch is still the latest; a superseding
       // switch keeps it hidden and reveals it once it finishes.
-      if (gen === this._showPaneGen && rootEl) rootEl.style.visibility = "";
+      if (gen === this._showPaneGen && rootEl) rootEl.removeClass("rv-hidden");
     }
 
     await this.persist();
@@ -1935,18 +1939,15 @@ export default class RecentViewPlugin extends Plugin {
         this.projectGroups.delete(projectId);
         continue;
       }
+      // Fill the root split, but allow shrinking below the tab-header content
+      // width (min-width:auto would otherwise stop the main area from getting
+      // narrower as more tabs open, limiting how far the sidebar can grow).
       if (projectId === activeId) {
-        // Fill the root split, but allow shrinking below the tab-header content
-        // width (min-width:auto would otherwise stop the main area from getting
-        // narrower as more tabs open, limiting how far the sidebar can grow).
-        el.style.display = "";
-        el.style.flexGrow = "1";
-        el.style.flexShrink = "1";
-        el.style.flexBasis = "0";
-        el.style.minWidth = "0";
-        el.style.width = "";
+        el.removeClass("rv-pane-inactive");
+        el.addClass("rv-pane-active");
       } else {
-        el.style.display = "none";
+        el.removeClass("rv-pane-active");
+        el.addClass("rv-pane-inactive");
       }
     }
   }
@@ -2010,7 +2011,7 @@ export default class RecentViewPlugin extends Plugin {
       if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
         open.push({
           path: filePath,
-          eState: leaf.getEphemeralState(),
+          eState: leaf.getEphemeralState() as Record<string, unknown>,
           active: filePath === activePath,
         });
       }
@@ -2037,7 +2038,7 @@ export default class RecentViewPlugin extends Plugin {
       if (typeof filePath === "string" && !open.some((o) => o.path === filePath)) {
         open.push({
           path: filePath,
-          eState: leaf.getEphemeralState(),
+          eState: leaf.getEphemeralState() as Record<string, unknown>,
           active: filePath === activePath,
         });
       }
@@ -3596,7 +3597,7 @@ class ProjectContentView extends ItemView {
     projectFolderPath: string | null
   ): void {
     const section = container.createDiv({ cls: "rv-folder-section" });
-    if (depth > 0) section.style.paddingLeft = `${depth * 14}px`;
+    if (depth > 0) section.setCssProps({ "--rv-depth": String(depth) });
     const head = section.createDiv({ cls: "rv-folder-head" });
     setIcon(head.createSpan({ cls: "rv-folder-icon" }), "folder");
     head.createSpan({ text: folder.name });
@@ -3774,7 +3775,7 @@ class ProjectContentView extends ItemView {
     const existing = this.findLeafForFile(file, group);
     if (existing) {
       workspace.setActiveLeaf(existing, { focus: true });
-      workspace.revealLeaf(existing);
+      void workspace.revealLeaf(existing);
       return;
     }
     // Open in the active project's pane: focus a leaf in it first so the new
@@ -4160,7 +4161,14 @@ class VaultTreeModal extends Modal {
     onChoose: (folder: TFolder) => void,
     opts: { excludePaths?: Set<string> } = {}
   ): VaultTreeModal {
-    return new VaultTreeModal(app, "folder", (i) => onChoose(i as TFolder), opts);
+    return new VaultTreeModal(
+      app,
+      "folder",
+      (i) => {
+        if (i instanceof TFolder) onChoose(i);
+      },
+      opts
+    );
   }
 
   /** Pick any markdown note in the vault. */
@@ -4169,7 +4177,14 @@ class VaultTreeModal extends Modal {
     onChoose: (file: TFile) => void,
     opts: { excludePaths?: Set<string> } = {}
   ): VaultTreeModal {
-    return new VaultTreeModal(app, "note", (i) => onChoose(i as TFile), opts);
+    return new VaultTreeModal(
+      app,
+      "note",
+      (i) => {
+        if (i instanceof TFile) onChoose(i);
+      },
+      opts
+    );
   }
 
   onOpen(): void {
@@ -4191,7 +4206,7 @@ class VaultTreeModal extends Modal {
     const root = this.app.vault.getRoot();
     if (this.mode === "folder") {
       const row = tree.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-      row.style.paddingLeft = "8px";
+      row.setCssProps({ "--rv-depth": "0" });
       row.createSpan({ cls: "rv-tree-twirl" });
       setIcon(row.createSpan({ cls: "rv-file-icon" }), "folder");
       row.createSpan({ cls: "rv-file-name", text: "/ (vault root)" });
@@ -4246,7 +4261,7 @@ class VaultTreeModal extends Modal {
     depth: number
   ): void {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     const expandable = this.hasExpandableChildren(folder);
     const twirl = row.createSpan({ cls: "rv-tree-twirl" });
     if (expandable) setIcon(twirl, "chevron-right");
@@ -4265,10 +4280,10 @@ class VaultTreeModal extends Modal {
           // Lazy: only read this folder's children when it is first expanded.
           this.renderChildren(childrenWrap, folder, depth + 1);
         }
-        childrenWrap.style.display = "";
+        childrenWrap.removeClass("rv-collapsed");
         setIcon(twirl, "chevron-down");
       } else {
-        if (childrenWrap) childrenWrap.style.display = "none";
+        if (childrenWrap) childrenWrap.addClass("rv-collapsed");
         setIcon(twirl, "chevron-right");
       }
     };
@@ -4289,7 +4304,7 @@ class VaultTreeModal extends Modal {
   ): void {
     if (this.opts.excludePaths?.has(file.path)) return;
     const row = container.createDiv({ cls: "rv-tree-row" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     row.createSpan({ cls: "rv-tree-twirl" });
     setIcon(row.createSpan({ cls: "rv-file-icon" }), "file");
     row.createSpan({ cls: "rv-file-name", text: file.basename });
@@ -4423,7 +4438,7 @@ class ProjectTreeModal extends Modal {
 
   private renderFolder(container: HTMLElement, folder: TFolder, depth: number): void {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-folder" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     setIcon(row.createSpan({ cls: "rv-file-icon" }), "folder");
     row.createSpan({ cls: "rv-file-name", text: folder.name || "/" });
     row.setAttribute("aria-label", `Open all notes in ${folder.path}`);
@@ -4446,7 +4461,7 @@ class ProjectTreeModal extends Modal {
 
   private renderFile(container: HTMLElement, file: TFile, depth: number): void {
     const row = container.createDiv({ cls: "rv-tree-row rv-tree-file" });
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.setCssProps({ "--rv-depth": String(depth) });
     setIcon(row.createSpan({ cls: "rv-file-icon" }), "file");
     row.createSpan({ cls: "rv-file-name", text: file.basename });
     row.setAttribute("aria-label", `Open ${file.path}`);
@@ -4702,6 +4717,11 @@ class RecentViewSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.renderSettings();
+  }
+
+  /** Build the settings UI. Use this instead of calling `display()` internally. */
+  private renderSettings(): void {
     const { containerEl } = this;
     containerEl.empty();
 
@@ -4823,7 +4843,7 @@ class RecentViewSettingTab extends PluginSettingTab {
               new Notice("Opening Google sign-in in your browser…");
               await this.plugin.drive.connect();
               new Notice("Connected to Google Drive.");
-              this.display();
+              this.renderSettings();
             } catch (e) {
               console.error("[RecentView] Google Drive connect failed", e);
               new Notice(`Google Drive connect failed: ${(e as Error).message}`, 12000);
@@ -4836,7 +4856,7 @@ class RecentViewSettingTab extends PluginSettingTab {
           .setTooltip("Disconnect")
           .onClick(async () => {
             await this.plugin.drive.disconnect();
-            this.display();
+            this.renderSettings();
           })
       );
   }
