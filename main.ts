@@ -2661,6 +2661,29 @@ export default class RecentViewPlugin extends Plugin {
             attachmentPathParts.push(parts);
           }
         }
+        // Third pass: bare-filename embeds (e.g. "![[Pasted image X.png]]")
+        // that didn't resolve via metadataCache (because the file doesn't
+        // exist locally yet) and weren't handled by driveLinkpathsToParts
+        // (which only takes slashed paths). Look them up in Drive by name.
+        const haveByName = new Set(
+          attachmentPathParts.map((p) => p[p.length - 1])
+        );
+        const bareNames = this.parseEmbedLinkpaths(sourceContent)
+          .filter((lp) => !lp.includes("/"))
+          .filter((lp) => !haveByName.has(lp));
+        if (bareNames.length > 0) {
+          const sourceFolderParts = mainParts.slice(0, -1);
+          const resolved = await this.resolveBareEmbedsOnDrive(
+            project.driveFolderId,
+            bareNames,
+            sourceFolderParts
+          );
+          for (const parts of resolved) {
+            if (!attachmentPathParts.some((p) => p.join("/") === parts.join("/"))) {
+              attachmentPathParts.push(parts);
+            }
+          }
+        }
       }
       for (const parts of attachmentPathParts) {
         if (parts.join("/") === mainParts.join("/")) continue;
@@ -2994,6 +3017,52 @@ export default class RecentViewPlugin extends Plugin {
         out.push(c.slice(localFolder.length + 1).split("/"));
         break;
       }
+    }
+    return out;
+  }
+
+  /**
+   * Given bare-filename embed linkpaths that the existing passes couldn't
+   * resolve, search the linked Drive folder for matching files and return the
+   * best Drive path-parts for each (path closest to `sourceFolderParts` wins,
+   * shallowest path breaks ties). Names with no Drive match are skipped.
+   */
+  private async resolveBareEmbedsOnDrive(
+    rootFolderId: string,
+    bareNames: string[],
+    sourceFolderParts: string[]
+  ): Promise<string[][]> {
+    if (bareNames.length === 0) return [];
+    const all = await this.drive.listAllDescendants(rootFolderId);
+    const byName = new Map<string, string[][]>();
+    for (const d of all) {
+      const list = byName.get(d.name);
+      if (list) list.push(d.parts);
+      else byName.set(d.name, [d.parts]);
+    }
+    const score = (parts: string[]): [number, number] => {
+      let common = 0;
+      const upTo = Math.min(parts.length - 1, sourceFolderParts.length);
+      while (common < upTo && parts[common] === sourceFolderParts[common]) {
+        common++;
+      }
+      return [common, parts.length];
+    };
+    const out: string[][] = [];
+    for (const name of new Set(bareNames)) {
+      const matches = byName.get(name);
+      if (!matches || matches.length === 0) continue;
+      let best = matches[0];
+      let bestScore = score(best);
+      for (let i = 1; i < matches.length; i++) {
+        const s = score(matches[i]);
+        // Higher common prefix wins; on a tie, shorter path wins.
+        if (s[0] > bestScore[0] || (s[0] === bestScore[0] && s[1] < bestScore[1])) {
+          best = matches[i];
+          bestScore = s;
+        }
+      }
+      out.push(best);
     }
     return out;
   }

@@ -286,6 +286,30 @@ export class GoogleDriveClient {
   }
 
   /**
+   * Recursively walk a Drive folder; return every non-folder descendant as
+   * `{ name, parts }`, where `parts` is the path components from the root
+   * folder down to (and including) the file's own name. Used to resolve
+   * bare-filename embeds whose Drive location isn't obvious from the source.
+   */
+  async listAllDescendants(
+    rootFolderId: string
+  ): Promise<{ name: string; parts: string[] }[]> {
+    const out: { name: string; parts: string[] }[] = [];
+    const walk = async (folderId: string, parts: string[]): Promise<void> => {
+      const children = await this.listChildren(folderId);
+      for (const c of children) {
+        if (c.mimeType === FOLDER_MIME) {
+          await walk(c.id, [...parts, c.name]);
+        } else {
+          out.push({ name: c.name, parts: [...parts, c.name] });
+        }
+      }
+    };
+    await walk(rootFolderId, []);
+    return out;
+  }
+
+  /**
    * List recent revisions of a Drive file, newest first. Drive auto-prunes
    * non-pinned revisions of binary files (~100 / 30 days); only revisions
    * still on the server are returned.

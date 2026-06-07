@@ -261,6 +261,27 @@ var GoogleDriveClient = class {
     return null;
   }
   /**
+   * Recursively walk a Drive folder; return every non-folder descendant as
+   * `{ name, parts }`, where `parts` is the path components from the root
+   * folder down to (and including) the file's own name. Used to resolve
+   * bare-filename embeds whose Drive location isn't obvious from the source.
+   */
+  async listAllDescendants(rootFolderId) {
+    const out = [];
+    const walk = async (folderId, parts) => {
+      const children = await this.listChildren(folderId);
+      for (const c of children) {
+        if (c.mimeType === FOLDER_MIME) {
+          await walk(c.id, [...parts, c.name]);
+        } else {
+          out.push({ name: c.name, parts: [...parts, c.name] });
+        }
+      }
+    };
+    await walk(rootFolderId, []);
+    return out;
+  }
+  /**
    * List recent revisions of a Drive file, newest first. Drive auto-prunes
    * non-pinned revisions of binary files (~100 / 30 days); only revisions
    * still on the server are returned.
@@ -2657,6 +2678,23 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
             attachmentPathParts.push(parts);
           }
         }
+        const haveByName = new Set(
+          attachmentPathParts.map((p) => p[p.length - 1])
+        );
+        const bareNames = this.parseEmbedLinkpaths(sourceContent).filter((lp) => !lp.includes("/")).filter((lp) => !haveByName.has(lp));
+        if (bareNames.length > 0) {
+          const sourceFolderParts = mainParts.slice(0, -1);
+          const resolved = await this.resolveBareEmbedsOnDrive(
+            project.driveFolderId,
+            bareNames,
+            sourceFolderParts
+          );
+          for (const parts of resolved) {
+            if (!attachmentPathParts.some((p) => p.join("/") === parts.join("/"))) {
+              attachmentPathParts.push(parts);
+            }
+          }
+        }
       }
       for (const parts of attachmentPathParts) {
         if (parts.join("/") === mainParts.join("/"))
@@ -2966,6 +3004,50 @@ ${MERGE_FM_CREATED}: ${(/* @__PURE__ */ new Date()).toISOString()}
         out.push(c.slice(localFolder.length + 1).split("/"));
         break;
       }
+    }
+    return out;
+  }
+  /**
+   * Given bare-filename embed linkpaths that the existing passes couldn't
+   * resolve, search the linked Drive folder for matching files and return the
+   * best Drive path-parts for each (path closest to `sourceFolderParts` wins,
+   * shallowest path breaks ties). Names with no Drive match are skipped.
+   */
+  async resolveBareEmbedsOnDrive(rootFolderId, bareNames, sourceFolderParts) {
+    if (bareNames.length === 0)
+      return [];
+    const all = await this.drive.listAllDescendants(rootFolderId);
+    const byName = /* @__PURE__ */ new Map();
+    for (const d of all) {
+      const list = byName.get(d.name);
+      if (list)
+        list.push(d.parts);
+      else
+        byName.set(d.name, [d.parts]);
+    }
+    const score = (parts) => {
+      let common = 0;
+      const upTo = Math.min(parts.length - 1, sourceFolderParts.length);
+      while (common < upTo && parts[common] === sourceFolderParts[common]) {
+        common++;
+      }
+      return [common, parts.length];
+    };
+    const out = [];
+    for (const name of new Set(bareNames)) {
+      const matches = byName.get(name);
+      if (!matches || matches.length === 0)
+        continue;
+      let best = matches[0];
+      let bestScore = score(best);
+      for (let i = 1; i < matches.length; i++) {
+        const s = score(matches[i]);
+        if (s[0] > bestScore[0] || s[0] === bestScore[0] && s[1] < bestScore[1]) {
+          best = matches[i];
+          bestScore = s;
+        }
+      }
+      out.push(best);
     }
     return out;
   }
