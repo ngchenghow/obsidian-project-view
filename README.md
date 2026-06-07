@@ -6,6 +6,8 @@
 
 # ProjectView
 
+email me: ngchenghow@gmail.com
+
 An [Obsidian](https://obsidian.md) plugin that organizes your notes into **projects**. Each project keeps its own set of folders and notes, remembers the tabs you had open, and can sync with a Google Drive folder.
 
 A project lives as a pane in the left sidebar; clicking it instantly restores that project's workspace (its open tabs, scroll position, and active tab) without losing state.
