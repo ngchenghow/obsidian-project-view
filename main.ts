@@ -2804,7 +2804,7 @@ export default class RecentViewPlugin extends Plugin {
    */
   async applyMergeNoteToOriginal(mergeFile: TFile): Promise<void> {
     const fm = this.app.metadataCache.getFileCache(mergeFile)?.frontmatter;
-    const sourcePath = fm?.[MERGE_FM_SOURCE];
+    const sourcePath: unknown = fm?.[MERGE_FM_SOURCE];
     if (typeof sourcePath !== "string" || !sourcePath) {
       new Notice(`"${mergeFile.name}" isn't a merge note.`);
       return;
