@@ -148,11 +148,25 @@ function genId(): string {
 // merge of two huge files can't lock up the renderer.
 const MERGE_MAX_CELLS = 25_000_000;
 
+// YAML frontmatter keys stamped on a merge note so we can locate the source
+// file when applying ticked changes back to it.
+const MERGE_FM_SOURCE = "project-view-merge-source";
+const MERGE_FM_CREATED = "project-view-merge-created";
+
 /**
  * Line-level additive merge: keep every line from `local`, weave in lines that
  * exist only in `remote`, and on a conflicting block emit both sides (local
  * first, then remote). Never deletes content from local. Returns null if the
  * inputs are too large to merge in memory.
+ *
+ * Every change is wrapped in a Markdown blockquote whose header is a task
+ * checkbox so the user can tick what they want applied back to the original
+ * (via "Apply ticks to original note" on the merge file's menu). Categories:
+ *   • "Added on Google Drive"            — lines only on Drive; default off
+ *   • "Not on Google Drive"              — lines only on local; default on
+ *   • "Modified — local version"         — local side of a conflict; default on
+ *   • "Modified — Google Drive version"  — Drive side of a conflict; default off
+ * Defaults preserve existing local content so a no-op apply is safe.
  */
 function mergeAdditive(local: string, remote: string): string | null {
   const a = local.split("\n");
@@ -171,23 +185,160 @@ function mergeAdditive(local: string, remote: string): string | null {
       cur[j] = a[i] === b[j] ? next[j + 1] + 1 : Math.max(next[j], cur[j + 1]);
     }
   }
-  const out: string[] = [];
+
+  type OpType = "common" | "local" | "drive";
+  const ops: { type: OpType; line: string }[] = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
-      out.push(a[i]);
+      ops.push({ type: "common", line: a[i] });
       i++;
       j++;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push(a[i++]);
+      ops.push({ type: "local", line: a[i++] });
     } else {
-      out.push(b[j++]);
+      ops.push({ type: "drive", line: b[j++] });
     }
   }
-  while (i < n) out.push(a[i++]);
-  while (j < m) out.push(b[j++]);
+  while (i < n) ops.push({ type: "local", line: a[i++] });
+  while (j < m) ops.push({ type: "drive", line: b[j++] });
+
+  // Group consecutive same-type ops into runs so we can label whole blocks.
+  const runs: { type: OpType; lines: string[] }[] = [];
+  for (const op of ops) {
+    const last = runs[runs.length - 1];
+    if (last && last.type === op.type) last.lines.push(op.line);
+    else runs.push({ type: op.type, lines: [op.line] });
+  }
+
+  const out: string[] = [];
+  // Each block is a top-level task list item (so the checkbox is clickable in
+  // Live Preview and Reading view) with the changed lines nested under it as
+  // an indented blockquote. Default ticks preserve existing local content
+  // (local-only and local-side of a modification start checked) while
+  // Drive-introduced changes start unchecked, so a no-op apply doesn't lose
+  // the user's data.
+  const pushQuoted = (label: string, lines: string[], defaultTick: boolean) => {
+    if (out.length && out[out.length - 1] !== "") out.push("");
+    out.push(`- [${defaultTick ? "x" : " "}] **${label}**`);
+    for (const line of lines) out.push(`  > ${line}`);
+    out.push("");
+  };
+
+  let k = 0;
+  while (k < runs.length) {
+    const r = runs[k];
+    if (r.type === "common") {
+      for (const line of r.lines) out.push(line);
+      k++;
+      continue;
+    }
+    const next = runs[k + 1];
+    if (r.type === "local" && next && next.type === "drive") {
+      // Adjacent local + drive runs = modified block; keep both sides.
+      pushQuoted("Modified — local version", r.lines, true);
+      pushQuoted("Modified — Google Drive version", next.lines, false);
+      k += 2;
+    } else if (r.type === "drive" && next && next.type === "local") {
+      pushQuoted("Modified — Google Drive version", r.lines, false);
+      pushQuoted("Modified — local version", next.lines, true);
+      k += 2;
+    } else if (r.type === "drive") {
+      pushQuoted("Added on Google Drive", r.lines, false);
+      k++;
+    } else {
+      // Lines exist locally but not on Drive. A 2-way diff can't tell whether
+      // Drive deleted them or local added them since last sync — describe the
+      // observable fact rather than guess at intent.
+      pushQuoted("Not on Google Drive", r.lines, true);
+      k++;
+    }
+  }
+
+  // Trim a single trailing blank we may have appended after a quoted block.
+  if (out.length && out[out.length - 1] === "") out.pop();
   return out.join("\n");
+}
+
+/**
+ * Parse a merge-note body and return the content to write back to the source:
+ * frontmatter is stripped, each labelled blockquote is kept (with `> ` prefix
+ * removed from its body) iff its task header is ticked, plain prose is kept
+ * as-is. Returns counts so the caller can show a useful notice.
+ */
+function applyMergeBody(raw: string): {
+  body: string;
+  kept: number;
+  dropped: number;
+} {
+  const lines = raw.split("\n");
+  let i = 0;
+  // Skip YAML frontmatter at top.
+  if (lines[0] === "---") {
+    let j = 1;
+    while (j < lines.length && lines[j] !== "---") j++;
+    if (j < lines.length) i = j + 1;
+  }
+  // Drop blank lines immediately after frontmatter.
+  while (i < lines.length && lines[i] === "") i++;
+
+  // Header: top-level task list item with our label in bold.
+  const HEADER = /^-\s*\[([ xX])\]\s*\*\*(.+?)\*\*\s*$/;
+  // Body line: two-space indent + blockquote marker (continuation of the task
+  // item). We accept both "  > " and a bare "  >" (empty body line).
+  const BODY = /^ {2}> ?(.*)$/;
+  const out: string[] = [];
+  let kept = 0;
+  let dropped = 0;
+  let skipBlankAfterDrop = false;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = HEADER.exec(line);
+    if (m) {
+      const checked = m[1].toLowerCase() === "x";
+      i++;
+      const body: string[] = [];
+      while (i < lines.length) {
+        const b = BODY.exec(lines[i]);
+        if (!b) break;
+        body.push(b[1]);
+        i++;
+      }
+      if (checked) {
+        kept++;
+        if (out.length && out[out.length - 1] !== "") out.push("");
+        for (const b of body) out.push(b);
+        // Consume one trailing blank that the original pushQuoted emitted, so
+        // we don't end up with two blank lines in a row.
+        if (i < lines.length && lines[i] === "") i++;
+      } else {
+        dropped++;
+        // If we dropped a block, also swallow the blank line that pushQuoted
+        // added after it (and possibly the blank line before, by remembering
+        // not to emit one before the next non-blank chunk).
+        if (i < lines.length && lines[i] === "") i++;
+        if (out.length && out[out.length - 1] === "") {
+          // Trim back-to-back blanks once.
+          skipBlankAfterDrop = true;
+        }
+      }
+      continue;
+    }
+    if (skipBlankAfterDrop && line === "") {
+      skipBlankAfterDrop = false;
+      i++;
+      continue;
+    }
+    skipBlankAfterDrop = false;
+    out.push(line);
+    i++;
+  }
+
+  // Collapse trailing blanks.
+  while (out.length && out[out.length - 1] === "") out.pop();
+  return { body: out.join("\n"), kept, dropped };
 }
 
 function sanitizeVaultName(name: string): string {
@@ -2509,10 +2660,11 @@ export default class RecentViewPlugin extends Plugin {
   }
 
   /**
-   * Pull the Drive copy of a single file and additively merge it into the local
-   * file: no lines are deleted, lines unique to Drive are inserted, and when a
-   * block conflicts, both the local and Drive versions are kept (Drive added
-   * after local) so the user can resolve it by hand.
+   * Pull the Drive copy of a single file and additively merge it with the
+   * local file. The merge is written to a NEW note next to the original
+   * (named "<basename> merge YYYY-MM-DD HH-MM-SS.<ext>") so the local file is
+   * never touched and the user can review/discard freely. Categories of change
+   * are labelled inline by mergeAdditive.
    */
   async mergeFileFromDrive(project: Project, file: TFile): Promise<void> {
     if (!isDesktop()) {
@@ -2570,11 +2722,81 @@ export default class RecentViewPlugin extends Plugin {
         new Notice(`"${file.name}" already contains the Google Drive version.`);
         return;
       }
-      await this.app.vault.modify(file, merged);
-      new Notice(`Merged "${file.name}" with Google Drive.`);
+      const parent = file.parent;
+      const dir = parent && parent.path !== "/" ? parent.path : "";
+      const ext = file.extension ? `.${file.extension}` : "";
+      const stamp = formatFilenameTimestamp(new Date().toISOString());
+      const baseName = `${file.basename} merge ${stamp}`;
+      let candidate = baseName;
+      let n = 1;
+      while (
+        this.app.vault.getAbstractFileByPath(
+          (dir ? `${dir}/` : "") + candidate + ext
+        )
+      ) {
+        n++;
+        candidate = `${baseName} ${n}`;
+      }
+      const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
+      // Frontmatter lets the "Apply ticks to original" action find the source
+      // file even if the merge note is later renamed or moved.
+      const frontmatter =
+        "---\n" +
+        `${MERGE_FM_SOURCE}: ${JSON.stringify(file.path)}\n` +
+        `${MERGE_FM_CREATED}: ${new Date().toISOString()}\n` +
+        "---\n\n";
+      const created = await this.app.vault.create(targetPath, frontmatter + merged);
+      await this.app.workspace.getLeaf("tab").openFile(created);
+      new Notice(`Merged "${file.name}" → "${created.name}".`);
       this.refreshContentView();
     } catch (e) {
       new Notice(`Google Drive merge failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * True if `file` is a merge note produced by mergeFileFromDrive (carries our
+   * frontmatter source key). Reads cached metadata so it's cheap to call from
+   * a menu handler.
+   */
+  isMergeNote(file: TFile): boolean {
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    return !!(fm && typeof fm[MERGE_FM_SOURCE] === "string");
+  }
+
+  /**
+   * Apply the ticked changes in a merge note back to its original source file.
+   * Each labelled blockquote is kept iff its task header is `[x]`; everything
+   * else (plain prose) is kept as-is. The merge note itself is left untouched
+   * so the user can refine selections and re-apply.
+   */
+  async applyMergeNoteToOriginal(mergeFile: TFile): Promise<void> {
+    const fm = this.app.metadataCache.getFileCache(mergeFile)?.frontmatter;
+    const sourcePath = fm?.[MERGE_FM_SOURCE];
+    if (typeof sourcePath !== "string" || !sourcePath) {
+      new Notice(`"${mergeFile.name}" isn't a merge note.`);
+      return;
+    }
+    const source = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (!(source instanceof TFile)) {
+      new Notice(`Original note "${sourcePath}" no longer exists.`);
+      return;
+    }
+    try {
+      const mergeText = await this.app.vault.read(mergeFile);
+      const result = applyMergeBody(mergeText);
+      if (result.kept === 0 && result.dropped === 0) {
+        new Notice(`"${mergeFile.name}" has no merge blocks to apply.`);
+        return;
+      }
+      await this.app.vault.modify(source, result.body);
+      await this.app.workspace.getLeaf("tab").openFile(source);
+      const parts = [`${result.kept} kept`];
+      if (result.dropped > 0) parts.push(`${result.dropped} dropped`);
+      new Notice(`Applied to "${source.name}" — ${parts.join(", ")}.`);
+      this.refreshContentView();
+    } catch (e) {
+      new Notice(`Apply merge failed: ${(e as Error).message}`);
     }
   }
 
@@ -3892,6 +4114,17 @@ class ProjectContentView extends ItemView {
           .setTitle("Close")
           .setIcon("x")
           .onClick(() => leaf.detach())
+      );
+      menu.addSeparator();
+    }
+
+    // Merge notes get an "apply ticks to original" action up top.
+    if (this.plugin.isMergeNote(file)) {
+      menu.addItem((i) =>
+        i
+          .setTitle("Apply ticks to original note")
+          .setIcon("check-check")
+          .onClick(() => void this.plugin.applyMergeNoteToOriginal(file))
       );
       menu.addSeparator();
     }

@@ -504,6 +504,8 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 var MERGE_MAX_CELLS = 25e6;
+var MERGE_FM_SOURCE = "project-view-merge-source";
+var MERGE_FM_CREATED = "project-view-merge-created";
 function mergeAdditive(local, remote) {
   const a = local.split("\n");
   const b = remote.split("\n");
@@ -519,25 +521,133 @@ function mergeAdditive(local, remote) {
       cur[j2] = a[i2] === b[j2] ? next[j2 + 1] + 1 : Math.max(next[j2], cur[j2 + 1]);
     }
   }
-  const out = [];
+  const ops = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
-      out.push(a[i]);
+      ops.push({ type: "common", line: a[i] });
       i++;
       j++;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push(a[i++]);
+      ops.push({ type: "local", line: a[i++] });
     } else {
-      out.push(b[j++]);
+      ops.push({ type: "drive", line: b[j++] });
     }
   }
   while (i < n)
-    out.push(a[i++]);
+    ops.push({ type: "local", line: a[i++] });
   while (j < m)
-    out.push(b[j++]);
+    ops.push({ type: "drive", line: b[j++] });
+  const runs = [];
+  for (const op of ops) {
+    const last = runs[runs.length - 1];
+    if (last && last.type === op.type)
+      last.lines.push(op.line);
+    else
+      runs.push({ type: op.type, lines: [op.line] });
+  }
+  const out = [];
+  const pushQuoted = (label, lines, defaultTick) => {
+    if (out.length && out[out.length - 1] !== "")
+      out.push("");
+    out.push(`- [${defaultTick ? "x" : " "}] **${label}**`);
+    for (const line of lines)
+      out.push(`  > ${line}`);
+    out.push("");
+  };
+  let k = 0;
+  while (k < runs.length) {
+    const r = runs[k];
+    if (r.type === "common") {
+      for (const line of r.lines)
+        out.push(line);
+      k++;
+      continue;
+    }
+    const next = runs[k + 1];
+    if (r.type === "local" && next && next.type === "drive") {
+      pushQuoted("Modified \u2014 local version", r.lines, true);
+      pushQuoted("Modified \u2014 Google Drive version", next.lines, false);
+      k += 2;
+    } else if (r.type === "drive" && next && next.type === "local") {
+      pushQuoted("Modified \u2014 Google Drive version", r.lines, false);
+      pushQuoted("Modified \u2014 local version", next.lines, true);
+      k += 2;
+    } else if (r.type === "drive") {
+      pushQuoted("Added on Google Drive", r.lines, false);
+      k++;
+    } else {
+      pushQuoted("Not on Google Drive", r.lines, true);
+      k++;
+    }
+  }
+  if (out.length && out[out.length - 1] === "")
+    out.pop();
   return out.join("\n");
+}
+function applyMergeBody(raw) {
+  const lines = raw.split("\n");
+  let i = 0;
+  if (lines[0] === "---") {
+    let j = 1;
+    while (j < lines.length && lines[j] !== "---")
+      j++;
+    if (j < lines.length)
+      i = j + 1;
+  }
+  while (i < lines.length && lines[i] === "")
+    i++;
+  const HEADER = /^-\s*\[([ xX])\]\s*\*\*(.+?)\*\*\s*$/;
+  const BODY = /^ {2}> ?(.*)$/;
+  const out = [];
+  let kept = 0;
+  let dropped = 0;
+  let skipBlankAfterDrop = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = HEADER.exec(line);
+    if (m) {
+      const checked = m[1].toLowerCase() === "x";
+      i++;
+      const body = [];
+      while (i < lines.length) {
+        const b = BODY.exec(lines[i]);
+        if (!b)
+          break;
+        body.push(b[1]);
+        i++;
+      }
+      if (checked) {
+        kept++;
+        if (out.length && out[out.length - 1] !== "")
+          out.push("");
+        for (const b of body)
+          out.push(b);
+        if (i < lines.length && lines[i] === "")
+          i++;
+      } else {
+        dropped++;
+        if (i < lines.length && lines[i] === "")
+          i++;
+        if (out.length && out[out.length - 1] === "") {
+          skipBlankAfterDrop = true;
+        }
+      }
+      continue;
+    }
+    if (skipBlankAfterDrop && line === "") {
+      skipBlankAfterDrop = false;
+      i++;
+      continue;
+    }
+    skipBlankAfterDrop = false;
+    out.push(line);
+    i++;
+  }
+  while (out.length && out[out.length - 1] === "")
+    out.pop();
+  return { body: out.join("\n"), kept, dropped };
 }
 function sanitizeVaultName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
@@ -2561,10 +2671,11 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
     }
   }
   /**
-   * Pull the Drive copy of a single file and additively merge it into the local
-   * file: no lines are deleted, lines unique to Drive are inserted, and when a
-   * block conflicts, both the local and Drive versions are kept (Drive added
-   * after local) so the user can resolve it by hand.
+   * Pull the Drive copy of a single file and additively merge it with the
+   * local file. The merge is written to a NEW note next to the original
+   * (named "<basename> merge YYYY-MM-DD HH-MM-SS.<ext>") so the local file is
+   * never touched and the user can review/discard freely. Categories of change
+   * are labelled inline by mergeAdditive.
    */
   async mergeFileFromDrive(project, file) {
     if (!isDesktop()) {
@@ -2622,11 +2733,79 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
         new import_obsidian2.Notice(`"${file.name}" already contains the Google Drive version.`);
         return;
       }
-      await this.app.vault.modify(file, merged);
-      new import_obsidian2.Notice(`Merged "${file.name}" with Google Drive.`);
+      const parent = file.parent;
+      const dir = parent && parent.path !== "/" ? parent.path : "";
+      const ext = file.extension ? `.${file.extension}` : "";
+      const stamp = formatFilenameTimestamp((/* @__PURE__ */ new Date()).toISOString());
+      const baseName = `${file.basename} merge ${stamp}`;
+      let candidate = baseName;
+      let n = 1;
+      while (this.app.vault.getAbstractFileByPath(
+        (dir ? `${dir}/` : "") + candidate + ext
+      )) {
+        n++;
+        candidate = `${baseName} ${n}`;
+      }
+      const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
+      const frontmatter = `---
+${MERGE_FM_SOURCE}: ${JSON.stringify(file.path)}
+${MERGE_FM_CREATED}: ${(/* @__PURE__ */ new Date()).toISOString()}
+---
+
+`;
+      const created = await this.app.vault.create(targetPath, frontmatter + merged);
+      await this.app.workspace.getLeaf("tab").openFile(created);
+      new import_obsidian2.Notice(`Merged "${file.name}" \u2192 "${created.name}".`);
       this.refreshContentView();
     } catch (e) {
       new import_obsidian2.Notice(`Google Drive merge failed: ${e.message}`);
+    }
+  }
+  /**
+   * True if `file` is a merge note produced by mergeFileFromDrive (carries our
+   * frontmatter source key). Reads cached metadata so it's cheap to call from
+   * a menu handler.
+   */
+  isMergeNote(file) {
+    var _a;
+    const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
+    return !!(fm && typeof fm[MERGE_FM_SOURCE] === "string");
+  }
+  /**
+   * Apply the ticked changes in a merge note back to its original source file.
+   * Each labelled blockquote is kept iff its task header is `[x]`; everything
+   * else (plain prose) is kept as-is. The merge note itself is left untouched
+   * so the user can refine selections and re-apply.
+   */
+  async applyMergeNoteToOriginal(mergeFile) {
+    var _a;
+    const fm = (_a = this.app.metadataCache.getFileCache(mergeFile)) == null ? void 0 : _a.frontmatter;
+    const sourcePath = fm == null ? void 0 : fm[MERGE_FM_SOURCE];
+    if (typeof sourcePath !== "string" || !sourcePath) {
+      new import_obsidian2.Notice(`"${mergeFile.name}" isn't a merge note.`);
+      return;
+    }
+    const source = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (!(source instanceof import_obsidian2.TFile)) {
+      new import_obsidian2.Notice(`Original note "${sourcePath}" no longer exists.`);
+      return;
+    }
+    try {
+      const mergeText = await this.app.vault.read(mergeFile);
+      const result = applyMergeBody(mergeText);
+      if (result.kept === 0 && result.dropped === 0) {
+        new import_obsidian2.Notice(`"${mergeFile.name}" has no merge blocks to apply.`);
+        return;
+      }
+      await this.app.vault.modify(source, result.body);
+      await this.app.workspace.getLeaf("tab").openFile(source);
+      const parts = [`${result.kept} kept`];
+      if (result.dropped > 0)
+        parts.push(`${result.dropped} dropped`);
+      new import_obsidian2.Notice(`Applied to "${source.name}" \u2014 ${parts.join(", ")}.`);
+      this.refreshContentView();
+    } catch (e) {
+      new import_obsidian2.Notice(`Apply merge failed: ${e.message}`);
     }
   }
   /** List recent Drive revisions for a vault file living under the linked folder. */
@@ -3679,6 +3858,12 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       const leaf = openLeaf;
       menu.addItem(
         (i) => i.setTitle("Close").setIcon("x").onClick(() => leaf.detach())
+      );
+      menu.addSeparator();
+    }
+    if (this.plugin.isMergeNote(file)) {
+      menu.addItem(
+        (i) => i.setTitle("Apply ticks to original note").setIcon("check-check").onClick(() => void this.plugin.applyMergeNoteToOriginal(file))
       );
       menu.addSeparator();
     }
