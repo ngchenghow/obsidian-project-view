@@ -1,7 +1,8 @@
 <img width="341" height="478" alt="image" src="https://github.com/user-attachments/assets/8e71ba62-98b0-464f-bd7f-ef73078ee388" />
 <img width="325" height="551" alt="image" src="https://github.com/user-attachments/assets/21f82ed0-433a-46f7-a25a-bc0ba692c7d5" />
 <img width="374" height="424" alt="image" src="https://github.com/user-attachments/assets/33a17900-aa04-4e7a-b394-f8056a2a1a7c" />
-<img width="249" height="219" alt="image" src="https://github.com/user-attachments/assets/6af8184e-0106-42a9-a28c-601d7f174ae7" />
+<img width="271" height="306" alt="image" src="https://github.com/user-attachments/assets/7e5ae660-d2b8-45b3-98ab-82b983c7a292" />
+
 
 
 # ProjectView
