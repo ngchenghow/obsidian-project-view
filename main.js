@@ -2846,9 +2846,24 @@ ${MERGE_FM_CREATED}: ${(/* @__PURE__ */ new Date()).toISOString()}
 
 `;
       const header = frontmatter + MERGE_INSTRUCTIONS + "\n\n" + MERGE_CONTENT_MARKER + "\n\n";
-      const created = await this.app.vault.create(targetPath, header + merged);
+      const embeds = await this.downloadAndAdoptEmbedsForText(project, file, merged);
+      const created = await this.app.vault.create(targetPath, header + embeds.newText);
       await this.app.workspace.getLeaf("tab").openFile(created);
-      new import_obsidian2.Notice(`Merged "${file.name}" \u2192 "${created.name}".`);
+      let msg = `Merged "${file.name}" \u2192 "${created.name}"`;
+      const totalEmbeds = embeds.written + embeds.reused + embeds.renamed + embeds.missing;
+      if (totalEmbeds > 0) {
+        const bits = [];
+        if (embeds.written > 0)
+          bits.push(`${embeds.written} written`);
+        if (embeds.reused > 0)
+          bits.push(`${embeds.reused} reused`);
+        if (embeds.renamed > 0)
+          bits.push(`${embeds.renamed} renamed`);
+        if (embeds.missing > 0)
+          bits.push(`${embeds.missing} missing`);
+        msg += ` \u2014 embeds: ${bits.join(", ")}`;
+      }
+      new import_obsidian2.Notice(`${msg}.`);
       this.refreshContentView();
     } catch (e) {
       new import_obsidian2.Notice(`Google Drive merge failed: ${e.message}`);

@@ -2844,9 +2844,24 @@ export default class RecentViewPlugin extends Plugin {
         "\n\n" +
         MERGE_CONTENT_MARKER +
         "\n\n";
-      const created = await this.app.vault.create(targetPath, header + merged);
+      // Adopt Drive's version of embedded media into the vault: identical
+      // local copies are reused, missing ones are written at the intended
+      // path, and byte-different ones are written under a unique "(Drive N)"
+      // name with the linkpath in the merge file rewritten to point at it.
+      const embeds = await this.downloadAndAdoptEmbedsForText(project, file, merged);
+      const created = await this.app.vault.create(targetPath, header + embeds.newText);
       await this.app.workspace.getLeaf("tab").openFile(created);
-      new Notice(`Merged "${file.name}" → "${created.name}".`);
+      let msg = `Merged "${file.name}" → "${created.name}"`;
+      const totalEmbeds = embeds.written + embeds.reused + embeds.renamed + embeds.missing;
+      if (totalEmbeds > 0) {
+        const bits: string[] = [];
+        if (embeds.written > 0) bits.push(`${embeds.written} written`);
+        if (embeds.reused > 0) bits.push(`${embeds.reused} reused`);
+        if (embeds.renamed > 0) bits.push(`${embeds.renamed} renamed`);
+        if (embeds.missing > 0) bits.push(`${embeds.missing} missing`);
+        msg += ` — embeds: ${bits.join(", ")}`;
+      }
+      new Notice(`${msg}.`);
       this.refreshContentView();
     } catch (e) {
       new Notice(`Google Drive merge failed: ${(e as Error).message}`);
