@@ -511,9 +511,7 @@ function mergeAdditive(local, remote) {
   const m = b.length;
   if ((n + 1) * (m + 1) > MERGE_MAX_CELLS)
     return null;
-  const dp = new Array(n + 1);
-  for (let i2 = 0; i2 <= n; i2++)
-    dp[i2] = new Uint32Array(m + 1);
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
   for (let i2 = n - 1; i2 >= 0; i2--) {
     const cur = dp[i2];
     const next = dp[i2 + 1];

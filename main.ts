@@ -163,8 +163,7 @@ function mergeAdditive(local: string, remote: string): string | null {
   // dp[i][j] = LCS length of a[i..] and b[j..]; tied diverges prefer local
   // first, so the additive walk naturally emits local-only blocks before
   // remote-only blocks rather than interleaving them line-by-line.
-  const dp: Uint32Array[] = new Array(n + 1);
-  for (let i = 0; i <= n; i++) dp[i] = new Uint32Array(m + 1);
+  const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
     const cur = dp[i];
     const next = dp[i + 1];
