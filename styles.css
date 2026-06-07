@@ -423,6 +423,56 @@
   margin-top: 16px;
 }
 
+.recent-view-modal .rv-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 4px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.recent-view-modal .rv-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.recent-view-modal .rv-version-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.recent-view-modal .rv-version-row-left,
+.recent-view-modal .rv-version-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recent-view-modal .rv-version-label {
+  font-weight: 600;
+  min-width: 32px;
+}
+
+.recent-view-modal .rv-version-time {
+  font-size: var(--font-ui-smaller);
+}
+
+.recent-view-modal .rv-version-size {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.recent-view-modal .rv-version-pin {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+}
+
 /* Recent edits view */
 
 .recent-view-edits .rv-header {

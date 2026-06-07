@@ -20,6 +20,7 @@ import {
   App,
 } from "obsidian";
 import {
+  DriveRevision,
   GoogleDriveClient,
   isDesktop,
   parseDriveFolderId,
@@ -141,6 +142,53 @@ const DATA_NOTE_HEADER =
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Cap the merge LCS table at ~25M cells (~100 MB of Uint32Array) so a runaway
+// merge of two huge files can't lock up the renderer.
+const MERGE_MAX_CELLS = 25_000_000;
+
+/**
+ * Line-level additive merge: keep every line from `local`, weave in lines that
+ * exist only in `remote`, and on a conflicting block emit both sides (local
+ * first, then remote). Never deletes content from local. Returns null if the
+ * inputs are too large to merge in memory.
+ */
+function mergeAdditive(local: string, remote: string): string | null {
+  const a = local.split("\n");
+  const b = remote.split("\n");
+  const n = a.length;
+  const m = b.length;
+  if ((n + 1) * (m + 1) > MERGE_MAX_CELLS) return null;
+  // dp[i][j] = LCS length of a[i..] and b[j..]; tied diverges prefer local
+  // first, so the additive walk naturally emits local-only blocks before
+  // remote-only blocks rather than interleaving them line-by-line.
+  const dp: Uint32Array[] = new Array(n + 1);
+  for (let i = 0; i <= n; i++) dp[i] = new Uint32Array(m + 1);
+  for (let i = n - 1; i >= 0; i--) {
+    const cur = dp[i];
+    const next = dp[i + 1];
+    for (let j = m - 1; j >= 0; j--) {
+      cur[j] = a[i] === b[j] ? next[j + 1] + 1 : Math.max(next[j], cur[j + 1]);
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push(a[i]);
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push(a[i++]);
+    } else {
+      out.push(b[j++]);
+    }
+  }
+  while (i < n) out.push(a[i++]);
+  while (j < m) out.push(b[j++]);
+  return out.join("\n");
 }
 
 function sanitizeVaultName(name: string): string {
@@ -2461,6 +2509,135 @@ export default class RecentViewPlugin extends Plugin {
     }
   }
 
+  /**
+   * Pull the Drive copy of a single file and additively merge it into the local
+   * file: no lines are deleted, lines unique to Drive are inserted, and when a
+   * block conflicts, both the local and Drive versions are kept (Drive added
+   * after local) so the user can resolve it by hand.
+   */
+  async mergeFileFromDrive(project: Project, file: TFile): Promise<void> {
+    if (!isDesktop()) {
+      new Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = project.driveLocalFolder;
+    if (!local) {
+      new Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      new Notice(`"${file.name}" isn't under the linked local folder.`);
+      return;
+    }
+    const parts = file.path.slice(local.length + 1).split("/");
+    new Notice(`Merging "${file.name}" with Google Drive…`);
+    try {
+      const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+      if (!child) {
+        new Notice(`"${file.name}" not found on Google Drive.`);
+        return;
+      }
+      const dl = await this.drive.downloadChildBytes(child);
+      if (!dl) {
+        new Notice(`"${file.name}" isn't a mergeable Drive file.`);
+        return;
+      }
+      let remoteText: string;
+      try {
+        remoteText = new TextDecoder("utf-8", { fatal: true }).decode(dl.data);
+      } catch {
+        new Notice(`"${file.name}" isn't a text file — cannot merge.`);
+        return;
+      }
+      const localText = await this.app.vault.read(file);
+      if (localText === remoteText) {
+        new Notice(`"${file.name}" already matches Google Drive.`);
+        return;
+      }
+      const merged = mergeAdditive(localText, remoteText);
+      if (merged === null) {
+        new Notice(`"${file.name}" is too large to merge in memory.`);
+        return;
+      }
+      if (merged === localText) {
+        new Notice(`"${file.name}" already contains the Google Drive version.`);
+        return;
+      }
+      await this.app.vault.modify(file, merged);
+      new Notice(`Merged "${file.name}" with Google Drive.`);
+      this.refreshContentView();
+    } catch (e) {
+      new Notice(`Google Drive merge failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** List recent Drive revisions for a vault file living under the linked folder. */
+  async listDriveRevisionsForFile(
+    project: Project,
+    file: TFile,
+    limit = 10
+  ): Promise<{ revisions: DriveRevision[]; driveFileId: string }> {
+    if (!isDesktop()) throw new Error("Google Drive is desktop-only.");
+    if (!this.drive.isConnected()) {
+      throw new Error("Connect Google Drive in the plugin settings first.");
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      throw new Error("This project isn't linked to a Google Drive folder.");
+    }
+    const local = project.driveLocalFolder;
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      throw new Error(`"${file.name}" isn't under the linked local folder.`);
+    }
+    const parts = file.path.slice(local.length + 1).split("/");
+    const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+    if (!child) throw new Error(`"${file.name}" not found on Google Drive.`);
+    const revisions = await this.drive.listRevisions(child.id, limit);
+    return { revisions, driveFileId: child.id };
+  }
+
+  /**
+   * Download a specific Drive revision for `file` and save it as a new vault
+   * note in the same folder. `versionLabel` is appended to the basename
+   * (e.g. "v2"), producing "<basename> (v2).<ext>". Opens the new note.
+   */
+  async openDriveVersionAsNewNote(
+    file: TFile,
+    driveFileId: string,
+    revisionId: string,
+    versionLabel: string
+  ): Promise<void> {
+    try {
+      const data = await this.drive.downloadRevisionBytes(driveFileId, revisionId);
+      const parent = file.parent;
+      const dir = parent && parent.path !== "/" ? parent.path : "";
+      const ext = file.extension ? `.${file.extension}` : "";
+      const safeLabel = versionLabel.replace(/[\\/:*?"<>|]/g, "_");
+      const baseName = `${file.basename} (${safeLabel})`;
+      let candidate = baseName;
+      let n = 1;
+      while (this.app.vault.getAbstractFileByPath(
+        (dir ? `${dir}/` : "") + candidate + ext
+      )) {
+        n++;
+        candidate = `${baseName} ${n}`;
+      }
+      const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
+      const created = await this.app.vault.createBinary(targetPath, data);
+      await this.app.workspace.getLeaf("tab").openFile(created);
+      new Notice(`Opened ${versionLabel} of "${file.name}".`);
+    } catch (e) {
+      new Notice(`Couldn't open Drive version: ${(e as Error).message}`);
+    }
+  }
+
   /** Download one Drive path under the project's linked folder, returning the outcome. */
   private async downloadDrivePath(
     project: Project,
@@ -2891,6 +3068,29 @@ function editSnippet(raw: string): string {
 }
 
 /** Compact "time ago" label (with the absolute time available as a tooltip). */
+function formatFilenameTimestamp(iso: string | undefined): string {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return "unknown";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`
+  );
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
 function formatRelativeTime(time: number): string {
   const diff = Date.now() - time;
   const sec = Math.floor(diff / 1000);
@@ -3750,6 +3950,28 @@ class ProjectContentView extends ItemView {
           .setIcon("cloud-download")
           .onClick(() => void this.plugin.downloadFileFromDrive(project, file))
       );
+      menu.addItem((i) =>
+        i
+          .setTitle("Show Drive versions…")
+          .setIcon("history")
+          .onClick(() =>
+            new DriveVersionPickerModal(
+              this.plugin.app,
+              this.plugin,
+              project,
+              file
+            ).open()
+          )
+      );
+      // Merge only makes sense for text-like notes (binaries can't be diffed).
+      if (file.extension === "md" || file.extension === "txt") {
+        menu.addItem((i) =>
+          i
+            .setTitle("Merge with Google Drive on Local")
+            .setIcon("git-merge")
+            .onClick(() => void this.plugin.mergeFileFromDrive(project, file))
+        );
+      }
     }
     menu.addSeparator();
     menu.addItem((i) =>
@@ -4705,6 +4927,87 @@ class DriveUploadAsNewModal extends Modal {
     }
     this.close();
     await this.plugin.uploadProjectToDriveAsNewFolder(this.project, parentId);
+  }
+}
+
+class DriveVersionPickerModal extends Modal {
+  private plugin: RecentViewPlugin;
+  private project: Project;
+  private file: TFile;
+  private static readonly LIMIT = 10;
+
+  constructor(app: App, plugin: RecentViewPlugin, project: Project, file: TFile) {
+    super(app);
+    this.plugin = plugin;
+    this.project = project;
+    this.file = file;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: `Drive versions — ${this.file.basename}` });
+    const status = contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Loading…",
+    });
+    const list = contentEl.createDiv({ cls: "rv-version-list" });
+    void this.loadList(status, list);
+  }
+
+  private async loadList(status: HTMLElement, list: HTMLElement): Promise<void> {
+    let revisions: DriveRevision[];
+    let driveFileId: string;
+    try {
+      const res = await this.plugin.listDriveRevisionsForFile(
+        this.project,
+        this.file,
+        DriveVersionPickerModal.LIMIT
+      );
+      revisions = res.revisions;
+      driveFileId = res.driveFileId;
+    } catch (e) {
+      status.setText((e as Error).message);
+      return;
+    }
+    if (revisions.length === 0) {
+      status.setText("No revisions on Drive.");
+      return;
+    }
+    status.setText(
+      "Drive prunes non-pinned revisions of binary files (~100 / 30 days). " +
+        "Click a version to open its contents as a new note."
+    );
+    revisions.forEach((rev, idx) => {
+      const label = `v${idx + 1}`;
+      const row = list.createDiv({ cls: "rv-version-row" });
+      const left = row.createDiv({ cls: "rv-version-row-left" });
+      left.createSpan({ cls: "rv-version-label", text: label });
+      const when = rev.modifiedTime
+        ? new Date(rev.modifiedTime).toLocaleString()
+        : "unknown time";
+      left.createSpan({ cls: "rv-version-time", text: when });
+      const right = row.createDiv({ cls: "rv-version-row-right" });
+      if (rev.size) {
+        right.createSpan({
+          cls: "rv-version-size",
+          text: formatBytes(Number(rev.size)),
+        });
+      }
+      if (rev.keepForever) {
+        right.createSpan({ cls: "rv-version-pin", text: "pinned" });
+      }
+      const fileLabel = formatFilenameTimestamp(rev.modifiedTime);
+      row.onclick = () => {
+        this.close();
+        void this.plugin.openDriveVersionAsNewNote(
+          this.file,
+          driveFileId,
+          rev.id,
+          fileLabel
+        );
+      };
+    });
   }
 }
 

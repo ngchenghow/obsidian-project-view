@@ -260,6 +260,31 @@ var GoogleDriveClient = class {
     }
     return null;
   }
+  /**
+   * List recent revisions of a Drive file, newest first. Drive auto-prunes
+   * non-pinned revisions of binary files (~100 / 30 days); only revisions
+   * still on the server are returned.
+   */
+  async listRevisions(fileId, limit = 10) {
+    var _a, _b;
+    const out = [];
+    let pageToken = "";
+    do {
+      const url = `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?fields=nextPageToken,revisions(id,modifiedTime,size,keepForever,md5Checksum,originalFilename)&pageSize=1000` + (pageToken ? `&pageToken=${pageToken}` : "");
+      const res = await this.api(url);
+      const json = res.json;
+      out.push(...(_a = json.revisions) != null ? _a : []);
+      pageToken = (_b = json.nextPageToken) != null ? _b : "";
+    } while (pageToken);
+    return out.slice(-limit).reverse();
+  }
+  /** Fetch the raw bytes of a specific revision. */
+  async downloadRevisionBytes(fileId, revisionId) {
+    const res = await this.api(
+      `https://www.googleapis.com/drive/v3/files/${fileId}/revisions/${revisionId}?alt=media`
+    );
+    return res.arrayBuffer;
+  }
   async listChildren(folderId) {
     var _a, _b;
     const out = [];
@@ -337,6 +362,12 @@ var GoogleDriveClient = class {
       return null;
     await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
     return { name: dl.name, written: true };
+  }
+  /** Fetch a Drive file's bytes (and resolved name) without writing to the vault. */
+  async downloadChildBytes(child) {
+    if (child.mimeType === FOLDER_MIME)
+      return null;
+    return this.downloadFile(child);
   }
   async downloadFile(child) {
     let url;
@@ -471,6 +502,44 @@ var DEFAULT_SETTINGS = {
 var DATA_NOTE_HEADER = "# ProjectView data\n\nThis note is managed by the **ProjectView** plugin and stores this vault's projects. Avoid editing the JSON block below by hand.";
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+var MERGE_MAX_CELLS = 25e6;
+function mergeAdditive(local, remote) {
+  const a = local.split("\n");
+  const b = remote.split("\n");
+  const n = a.length;
+  const m = b.length;
+  if ((n + 1) * (m + 1) > MERGE_MAX_CELLS)
+    return null;
+  const dp = new Array(n + 1);
+  for (let i2 = 0; i2 <= n; i2++)
+    dp[i2] = new Uint32Array(m + 1);
+  for (let i2 = n - 1; i2 >= 0; i2--) {
+    const cur = dp[i2];
+    const next = dp[i2 + 1];
+    for (let j2 = m - 1; j2 >= 0; j2--) {
+      cur[j2] = a[i2] === b[j2] ? next[j2 + 1] + 1 : Math.max(next[j2], cur[j2 + 1]);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push(a[i]);
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push(a[i++]);
+    } else {
+      out.push(b[j++]);
+    }
+  }
+  while (i < n)
+    out.push(a[i++]);
+  while (j < m)
+    out.push(b[j++]);
+  return out.join("\n");
 }
 function sanitizeVaultName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Google Drive";
@@ -2493,6 +2562,125 @@ var RecentViewPlugin = class extends import_obsidian2.Plugin {
       new import_obsidian2.Notice(`Google Drive download failed: ${e.message}`);
     }
   }
+  /**
+   * Pull the Drive copy of a single file and additively merge it into the local
+   * file: no lines are deleted, lines unique to Drive are inserted, and when a
+   * block conflicts, both the local and Drive versions are kept (Drive added
+   * after local) so the user can resolve it by hand.
+   */
+  async mergeFileFromDrive(project, file) {
+    if (!isDesktop()) {
+      new import_obsidian2.Notice("Google Drive is desktop-only.");
+      return;
+    }
+    if (!this.drive.isConnected()) {
+      new import_obsidian2.Notice("Connect Google Drive in the plugin settings first.");
+      return;
+    }
+    if (!project.driveFolderId) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    const local = project.driveLocalFolder;
+    if (!local) {
+      new import_obsidian2.Notice("This project isn't linked to a Google Drive folder.");
+      return;
+    }
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      new import_obsidian2.Notice(`"${file.name}" isn't under the linked local folder.`);
+      return;
+    }
+    const parts = file.path.slice(local.length + 1).split("/");
+    new import_obsidian2.Notice(`Merging "${file.name}" with Google Drive\u2026`);
+    try {
+      const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+      if (!child) {
+        new import_obsidian2.Notice(`"${file.name}" not found on Google Drive.`);
+        return;
+      }
+      const dl = await this.drive.downloadChildBytes(child);
+      if (!dl) {
+        new import_obsidian2.Notice(`"${file.name}" isn't a mergeable Drive file.`);
+        return;
+      }
+      let remoteText;
+      try {
+        remoteText = new TextDecoder("utf-8", { fatal: true }).decode(dl.data);
+      } catch (e) {
+        new import_obsidian2.Notice(`"${file.name}" isn't a text file \u2014 cannot merge.`);
+        return;
+      }
+      const localText = await this.app.vault.read(file);
+      if (localText === remoteText) {
+        new import_obsidian2.Notice(`"${file.name}" already matches Google Drive.`);
+        return;
+      }
+      const merged = mergeAdditive(localText, remoteText);
+      if (merged === null) {
+        new import_obsidian2.Notice(`"${file.name}" is too large to merge in memory.`);
+        return;
+      }
+      if (merged === localText) {
+        new import_obsidian2.Notice(`"${file.name}" already contains the Google Drive version.`);
+        return;
+      }
+      await this.app.vault.modify(file, merged);
+      new import_obsidian2.Notice(`Merged "${file.name}" with Google Drive.`);
+      this.refreshContentView();
+    } catch (e) {
+      new import_obsidian2.Notice(`Google Drive merge failed: ${e.message}`);
+    }
+  }
+  /** List recent Drive revisions for a vault file living under the linked folder. */
+  async listDriveRevisionsForFile(project, file, limit = 10) {
+    if (!isDesktop())
+      throw new Error("Google Drive is desktop-only.");
+    if (!this.drive.isConnected()) {
+      throw new Error("Connect Google Drive in the plugin settings first.");
+    }
+    if (!project.driveFolderId || !project.driveLocalFolder) {
+      throw new Error("This project isn't linked to a Google Drive folder.");
+    }
+    const local = project.driveLocalFolder;
+    if (file.path !== `${local}/${file.name}` && !file.path.startsWith(`${local}/`)) {
+      throw new Error(`"${file.name}" isn't under the linked local folder.`);
+    }
+    const parts = file.path.slice(local.length + 1).split("/");
+    const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+    if (!child)
+      throw new Error(`"${file.name}" not found on Google Drive.`);
+    const revisions = await this.drive.listRevisions(child.id, limit);
+    return { revisions, driveFileId: child.id };
+  }
+  /**
+   * Download a specific Drive revision for `file` and save it as a new vault
+   * note in the same folder. `versionLabel` is appended to the basename
+   * (e.g. "v2"), producing "<basename> (v2).<ext>". Opens the new note.
+   */
+  async openDriveVersionAsNewNote(file, driveFileId, revisionId, versionLabel) {
+    try {
+      const data = await this.drive.downloadRevisionBytes(driveFileId, revisionId);
+      const parent = file.parent;
+      const dir = parent && parent.path !== "/" ? parent.path : "";
+      const ext = file.extension ? `.${file.extension}` : "";
+      const safeLabel = versionLabel.replace(/[\\/:*?"<>|]/g, "_");
+      const baseName = `${file.basename} (${safeLabel})`;
+      let candidate = baseName;
+      let n = 1;
+      while (this.app.vault.getAbstractFileByPath(
+        (dir ? `${dir}/` : "") + candidate + ext
+      )) {
+        n++;
+        candidate = `${baseName} ${n}`;
+      }
+      const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
+      const created = await this.app.vault.createBinary(targetPath, data);
+      await this.app.workspace.getLeaf("tab").openFile(created);
+      new import_obsidian2.Notice(`Opened ${versionLabel} of "${file.name}".`);
+    } catch (e) {
+      new import_obsidian2.Notice(`Couldn't open Drive version: ${e.message}`);
+    }
+  }
   /** Download one Drive path under the project's linked folder, returning the outcome. */
   async downloadDrivePath(project, parts) {
     if (!project.driveFolderId || !project.driveLocalFolder)
@@ -2833,6 +3021,27 @@ function editSnippet(raw) {
   if (raw.length)
     return "(whitespace)";
   return "(empty)";
+}
+function formatFilenameTimestamp(iso) {
+  const d = iso ? new Date(iso) : /* @__PURE__ */ new Date();
+  if (Number.isNaN(d.getTime()))
+    return "unknown";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n < 0)
+    return "";
+  if (n < 1024)
+    return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
 }
 function formatRelativeTime(time) {
   const diff = Date.now() - time;
@@ -3510,6 +3719,21 @@ var ProjectContentView = class extends import_obsidian2.ItemView {
       menu.addItem(
         (i) => i.setTitle("Download from Google Drive").setIcon("cloud-download").onClick(() => void this.plugin.downloadFileFromDrive(project, file))
       );
+      menu.addItem(
+        (i) => i.setTitle("Show Drive versions\u2026").setIcon("history").onClick(
+          () => new DriveVersionPickerModal(
+            this.plugin.app,
+            this.plugin,
+            project,
+            file
+          ).open()
+        )
+      );
+      if (file.extension === "md" || file.extension === "txt") {
+        menu.addItem(
+          (i) => i.setTitle("Merge with Google Drive on Local").setIcon("git-merge").onClick(() => void this.plugin.mergeFileFromDrive(project, file))
+        );
+      }
     }
     menu.addSeparator();
     menu.addItem(
@@ -4251,6 +4475,78 @@ var DriveUploadAsNewModal = class extends import_obsidian2.Modal {
     await this.plugin.uploadProjectToDriveAsNewFolder(this.project, parentId);
   }
 };
+var _DriveVersionPickerModal = class _DriveVersionPickerModal extends import_obsidian2.Modal {
+  constructor(app, plugin, project, file) {
+    super(app);
+    this.plugin = plugin;
+    this.project = project;
+    this.file = file;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("recent-view-modal");
+    contentEl.createEl("h3", { text: `Drive versions \u2014 ${this.file.basename}` });
+    const status = contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Loading\u2026"
+    });
+    const list = contentEl.createDiv({ cls: "rv-version-list" });
+    void this.loadList(status, list);
+  }
+  async loadList(status, list) {
+    let revisions;
+    let driveFileId;
+    try {
+      const res = await this.plugin.listDriveRevisionsForFile(
+        this.project,
+        this.file,
+        _DriveVersionPickerModal.LIMIT
+      );
+      revisions = res.revisions;
+      driveFileId = res.driveFileId;
+    } catch (e) {
+      status.setText(e.message);
+      return;
+    }
+    if (revisions.length === 0) {
+      status.setText("No revisions on Drive.");
+      return;
+    }
+    status.setText(
+      "Drive prunes non-pinned revisions of binary files (~100 / 30 days). Click a version to open its contents as a new note."
+    );
+    revisions.forEach((rev, idx) => {
+      const label = `v${idx + 1}`;
+      const row = list.createDiv({ cls: "rv-version-row" });
+      const left = row.createDiv({ cls: "rv-version-row-left" });
+      left.createSpan({ cls: "rv-version-label", text: label });
+      const when = rev.modifiedTime ? new Date(rev.modifiedTime).toLocaleString() : "unknown time";
+      left.createSpan({ cls: "rv-version-time", text: when });
+      const right = row.createDiv({ cls: "rv-version-row-right" });
+      if (rev.size) {
+        right.createSpan({
+          cls: "rv-version-size",
+          text: formatBytes(Number(rev.size))
+        });
+      }
+      if (rev.keepForever) {
+        right.createSpan({ cls: "rv-version-pin", text: "pinned" });
+      }
+      const fileLabel = formatFilenameTimestamp(rev.modifiedTime);
+      row.onclick = () => {
+        this.close();
+        void this.plugin.openDriveVersionAsNewNote(
+          this.file,
+          driveFileId,
+          rev.id,
+          fileLabel
+        );
+      };
+    });
+  }
+};
+_DriveVersionPickerModal.LIMIT = 10;
+var DriveVersionPickerModal = _DriveVersionPickerModal;
 var RecentViewSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);

@@ -14,6 +14,15 @@ export interface DriveChild {
   size?: string;
 }
 
+export interface DriveRevision {
+  id: string;
+  modifiedTime?: string;
+  size?: string;
+  keepForever?: boolean;
+  md5Checksum?: string;
+  originalFilename?: string;
+}
+
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -276,6 +285,39 @@ export class GoogleDriveClient {
     return null;
   }
 
+  /**
+   * List recent revisions of a Drive file, newest first. Drive auto-prunes
+   * non-pinned revisions of binary files (~100 / 30 days); only revisions
+   * still on the server are returned.
+   */
+  async listRevisions(fileId: string, limit = 10): Promise<DriveRevision[]> {
+    const out: DriveRevision[] = [];
+    let pageToken = "";
+    do {
+      const url =
+        `https://www.googleapis.com/drive/v3/files/${fileId}/revisions` +
+        `?fields=nextPageToken,revisions(id,modifiedTime,size,keepForever,md5Checksum,originalFilename)` +
+        `&pageSize=1000` +
+        (pageToken ? `&pageToken=${pageToken}` : "");
+      const res = await this.api(url);
+      const json = res.json as { revisions?: DriveRevision[]; nextPageToken?: string };
+      out.push(...(json.revisions ?? []));
+      pageToken = json.nextPageToken ?? "";
+    } while (pageToken);
+    return out.slice(-limit).reverse();
+  }
+
+  /** Fetch the raw bytes of a specific revision. */
+  async downloadRevisionBytes(
+    fileId: string,
+    revisionId: string
+  ): Promise<ArrayBuffer> {
+    const res = await this.api(
+      `https://www.googleapis.com/drive/v3/files/${fileId}/revisions/${revisionId}?alt=media`
+    );
+    return res.arrayBuffer;
+  }
+
   private async listChildren(folderId: string): Promise<DriveChild[]> {
     const out: DriveChild[] = [];
     let pageToken = "";
@@ -357,6 +399,14 @@ export class GoogleDriveClient {
     if (!dl) return null;
     await adapter.writeBinary(`${vaultDir}/${dl.name}`, dl.data);
     return { name: dl.name, written: true };
+  }
+
+  /** Fetch a Drive file's bytes (and resolved name) without writing to the vault. */
+  async downloadChildBytes(
+    child: DriveChild
+  ): Promise<{ name: string; data: ArrayBuffer } | null> {
+    if (child.mimeType === FOLDER_MIME) return null;
+    return this.downloadFile(child);
   }
 
   private async downloadFile(
