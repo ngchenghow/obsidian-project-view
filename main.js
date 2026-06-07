@@ -506,6 +506,8 @@ function genId() {
 var MERGE_MAX_CELLS = 25e6;
 var MERGE_FM_SOURCE = "project-view-merge-source";
 var MERGE_FM_CREATED = "project-view-merge-created";
+var MERGE_CONTENT_MARKER = "<!-- project-view-merge-content-start -->";
+var MERGE_INSTRUCTIONS = "> [!info] How to use this merge note\n> 1. Tick the boxes below to choose which changes to keep.\n> 2. Open this file's menu in the right pane \u2192 **Apply ticks to original note**.\n>\n> Default ticks already preserve your existing local content; Drive additions and Drive-side modifications start unchecked, so a no-op apply is safe. Re-tick and re-apply as many times as you like \u2014 this note is left intact.";
 function mergeAdditive(local, remote) {
   const a = local.split("\n");
   const b = remote.split("\n");
@@ -598,6 +600,15 @@ function applyMergeBody(raw) {
   }
   while (i < lines.length && lines[i] === "")
     i++;
+  const SCAN_LIMIT = 40;
+  for (let s = i; s < Math.min(lines.length, i + SCAN_LIMIT); s++) {
+    if (lines[s].trim() === MERGE_CONTENT_MARKER) {
+      i = s + 1;
+      while (i < lines.length && lines[i] === "")
+        i++;
+      break;
+    }
+  }
   const HEADER = /^-\s*\[([ xX])\]\s*\*\*(.+?)\*\*\s*$/;
   const BODY = /^ {2}> ?(.*)$/;
   const out = [];
@@ -2753,7 +2764,8 @@ ${MERGE_FM_CREATED}: ${(/* @__PURE__ */ new Date()).toISOString()}
 ---
 
 `;
-      const created = await this.app.vault.create(targetPath, frontmatter + merged);
+      const header = frontmatter + MERGE_INSTRUCTIONS + "\n\n" + MERGE_CONTENT_MARKER + "\n\n";
+      const created = await this.app.vault.create(targetPath, header + merged);
       await this.app.workspace.getLeaf("tab").openFile(created);
       new import_obsidian2.Notice(`Merged "${file.name}" \u2192 "${created.name}".`);
       this.refreshContentView();

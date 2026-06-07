@@ -153,6 +153,18 @@ const MERGE_MAX_CELLS = 25_000_000;
 const MERGE_FM_SOURCE = "project-view-merge-source";
 const MERGE_FM_CREATED = "project-view-merge-created";
 
+// Sentinel that separates the user-facing instructions block from the actual
+// merge content. applyMergeBody skips everything up to and including this
+// line, so the instructions never leak into the applied output.
+const MERGE_CONTENT_MARKER = "<!-- project-view-merge-content-start -->";
+
+const MERGE_INSTRUCTIONS =
+  "> [!info] How to use this merge note\n" +
+  "> 1. Tick the boxes below to choose which changes to keep.\n" +
+  "> 2. Open this file's menu in the right pane → **Apply ticks to original note**.\n" +
+  ">\n" +
+  "> Default ticks already preserve your existing local content; Drive additions and Drive-side modifications start unchecked, so a no-op apply is safe. Re-tick and re-apply as many times as you like — this note is left intact.";
+
 /**
  * Line-level additive merge: keep every line from `local`, weave in lines that
  * exist only in `remote`, and on a conflicting block emit both sides (local
@@ -282,6 +294,18 @@ function applyMergeBody(raw: string): {
   }
   // Drop blank lines immediately after frontmatter.
   while (i < lines.length && lines[i] === "") i++;
+  // If the instructions sentinel is present, jump past it (and the leading
+  // instructions block) so we never apply the help text back to the source.
+  // Look ahead within a small window so we don't accidentally hop over real
+  // content if the marker is missing.
+  const SCAN_LIMIT = 40;
+  for (let s = i; s < Math.min(lines.length, i + SCAN_LIMIT); s++) {
+    if (lines[s].trim() === MERGE_CONTENT_MARKER) {
+      i = s + 1;
+      while (i < lines.length && lines[i] === "") i++;
+      break;
+    }
+  }
 
   // Header: top-level task list item with our label in bold.
   const HEADER = /^-\s*\[([ xX])\]\s*\*\*(.+?)\*\*\s*$/;
@@ -2739,13 +2763,21 @@ export default class RecentViewPlugin extends Plugin {
       }
       const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
       // Frontmatter lets the "Apply ticks to original" action find the source
-      // file even if the merge note is later renamed or moved.
+      // file even if the merge note is later renamed or moved. Instructions
+      // sit between frontmatter and the sentinel; the apply parser skips
+      // them, so they never leak into the source file when applied.
       const frontmatter =
         "---\n" +
         `${MERGE_FM_SOURCE}: ${JSON.stringify(file.path)}\n` +
         `${MERGE_FM_CREATED}: ${new Date().toISOString()}\n` +
         "---\n\n";
-      const created = await this.app.vault.create(targetPath, frontmatter + merged);
+      const header =
+        frontmatter +
+        MERGE_INSTRUCTIONS +
+        "\n\n" +
+        MERGE_CONTENT_MARKER +
+        "\n\n";
+      const created = await this.app.vault.create(targetPath, header + merged);
       await this.app.workspace.getLeaf("tab").openFile(created);
       new Notice(`Merged "${file.name}" → "${created.name}".`);
       this.refreshContentView();
