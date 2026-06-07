@@ -273,6 +273,50 @@ function mergeAdditive(local: string, remote: string): string | null {
   return out.join("\n");
 }
 
+function bytesEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  const va = new Uint8Array(a);
+  const vb = new Uint8Array(b);
+  for (let i = 0; i < va.length; i++) if (va[i] !== vb[i]) return false;
+  return true;
+}
+
+/**
+ * Rewrite embed linkpaths in text. `map` is `oldLinkpath → newLinkpath` where
+ * each old linkpath matches the form produced by parseEmbedLinkpaths (the
+ * trimmed inner of `![[...]]` before `#`/`^`/`|`, or the decoded URL of
+ * `![alt](url)`). Aliases, sections, and titles are preserved.
+ */
+function rewriteEmbedLinkpaths(text: string, map: Map<string, string>): string {
+  if (map.size === 0) return text;
+  let out = text.replace(
+    /!\[\[([^\]\n]+?)(\|[^\]\n]*)?\]\]/g,
+    (full, inner: string, alias: string | undefined) => {
+      const sep = inner.search(/[#^]/);
+      const linkpath = (sep >= 0 ? inner.slice(0, sep) : inner).trim();
+      const rest = sep >= 0 ? inner.slice(sep) : "";
+      const next = map.get(linkpath);
+      if (!next) return full;
+      return `![[${next}${rest}${alias ?? ""}]]`;
+    }
+  );
+  out = out.replace(
+    /!\[([^\]\n]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g,
+    (full, alt: string, urlStr: string, title: string | undefined) => {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(urlStr)) return full;
+      const hashIdx = urlStr.indexOf("#");
+      const rawPath = hashIdx >= 0 ? urlStr.slice(0, hashIdx) : urlStr;
+      const fragment = hashIdx >= 0 ? urlStr.slice(hashIdx) : "";
+      const linkpath = decodeURIComponent(rawPath);
+      const next = map.get(linkpath);
+      if (!next) return full;
+      const encoded = encodeURI(next);
+      return `![${alt}](${encoded}${fragment}${title ?? ""})`;
+    }
+  );
+  return out;
+}
+
 /**
  * Parse a merge-note body and return the content to write back to the source:
  * frontmatter is stripped, each labelled blockquote is kept (with `> ` prefix
@@ -2882,9 +2926,14 @@ export default class RecentViewPlugin extends Plugin {
   /**
    * Download a specific Drive revision for `file` and save it as a new vault
    * note in the same folder. `versionLabel` is appended to the basename
-   * (e.g. "v2"), producing "<basename> (v2).<ext>". Opens the new note.
+   * (e.g. "v2"), producing "<basename> (v2).<ext>". For text revisions, also
+   * fetches any embedded media from Drive: when the local copy is missing or
+   * byte-identical it's reused; when bytes differ, the Drive copy is saved
+   * under a unique "(Drive N)" name and the linkpath in the new note is
+   * rewritten so it points at the new file. Opens the new note.
    */
   async openDriveVersionAsNewNote(
+    project: Project,
     file: TFile,
     driveFileId: string,
     revisionId: string,
@@ -2906,9 +2955,36 @@ export default class RecentViewPlugin extends Plugin {
         candidate = `${baseName} ${n}`;
       }
       const targetPath = (dir ? `${dir}/` : "") + candidate + ext;
-      const created = await this.app.vault.createBinary(targetPath, data);
+
+      let bytesToWrite: ArrayBuffer = data;
+      let embedSummary = "";
+      if (file.extension === "md" || file.extension === "txt") {
+        let text: string;
+        try {
+          text = new TextDecoder("utf-8", { fatal: true }).decode(data);
+        } catch {
+          text = "";
+        }
+        if (text) {
+          const r = await this.downloadAndAdoptEmbedsForText(project, file, text);
+          if (r.newText !== text) {
+            bytesToWrite = new TextEncoder().encode(r.newText).buffer;
+          }
+          const totalEmbeds = r.written + r.reused + r.renamed + r.missing;
+          if (totalEmbeds > 0) {
+            const bits: string[] = [];
+            if (r.written > 0) bits.push(`${r.written} written`);
+            if (r.reused > 0) bits.push(`${r.reused} reused`);
+            if (r.renamed > 0) bits.push(`${r.renamed} renamed`);
+            if (r.missing > 0) bits.push(`${r.missing} missing`);
+            embedSummary = ` — embeds: ${bits.join(", ")}`;
+          }
+        }
+      }
+
+      const created = await this.app.vault.createBinary(targetPath, bytesToWrite);
       await this.app.workspace.getLeaf("tab").openFile(created);
-      new Notice(`Opened ${versionLabel} of "${file.name}".`);
+      new Notice(`Opened ${versionLabel} of "${file.name}"${embedSummary}.`);
     } catch (e) {
       new Notice(`Couldn't open Drive version: ${(e as Error).message}`);
     }
@@ -3065,6 +3141,150 @@ export default class RecentViewPlugin extends Plugin {
       out.push(best);
     }
     return out;
+  }
+
+  /**
+   * For each embed linkpath in `text`, fetch the corresponding asset from
+   * Drive (under the project's linked folder) and adopt it locally. If a
+   * local file already exists at the intended path and its bytes match,
+   * reuse it (no write, no rename). If bytes differ, write the Drive copy
+   * to a uniquified path and rewrite the linkpath in the returned text
+   * so it points at the new file. Used by openDriveVersionAsNewNote so the
+   * historical revision opens with its media intact and doesn't clobber any
+   * locally-modified asset of the same name.
+   */
+  private async downloadAndAdoptEmbedsForText(
+    project: Project,
+    sourceFile: TFile,
+    text: string
+  ): Promise<{
+    newText: string;
+    written: number;
+    reused: number;
+    renamed: number;
+    missing: number;
+  }> {
+    const result = { newText: text, written: 0, reused: 0, renamed: 0, missing: 0 };
+    const local = project.driveLocalFolder;
+    if (!local || !project.driveFolderId) return result;
+    if (!sourceFile.path.startsWith(`${local}/`) && sourceFile.path !== `${local}/${sourceFile.name}`) {
+      return result;
+    }
+    const linkpaths = this.parseEmbedLinkpaths(text);
+    if (linkpaths.length === 0) return result;
+
+    // Resolve linkpath → Drive path parts (under linked folder).
+    // Slashed linkpaths via driveLinkpathsToParts (which already keeps a
+    // 1:1 mapping with parseEmbedLinkpaths order); bare names via the
+    // existing on-Drive index resolver.
+    const sourceDir = sourceFile.path.includes("/")
+      ? sourceFile.path.slice(0, sourceFile.path.lastIndexOf("/"))
+      : "";
+    const resolution = new Map<string, string[]>();
+    for (const lp of linkpaths) {
+      if (!lp.includes("/")) continue;
+      const candidates = [sourceDir ? `${sourceDir}/${lp}` : lp, lp];
+      for (const c of candidates) {
+        if (c !== local && !c.startsWith(`${local}/`)) continue;
+        resolution.set(lp, c.slice(local.length + 1).split("/"));
+        break;
+      }
+    }
+    const bareNames = linkpaths.filter(
+      (lp) => !lp.includes("/") && !resolution.has(lp)
+    );
+    if (bareNames.length > 0) {
+      const mainParts = sourceFile.path.slice(local.length + 1).split("/");
+      const resolved = await this.resolveBareEmbedsOnDrive(
+        project.driveFolderId,
+        bareNames,
+        mainParts.slice(0, -1)
+      );
+      // resolveBareEmbedsOnDrive de-dupes by name; map back by last segment.
+      const byName = new Map<string, string[]>();
+      for (const parts of resolved) byName.set(parts[parts.length - 1], parts);
+      for (const name of bareNames) {
+        const parts = byName.get(name);
+        if (parts) resolution.set(name, parts);
+      }
+    }
+
+    const renames = new Map<string, string>();
+    const adapter = this.app.vault.adapter;
+    const ensureDir = async (path: string) => {
+      const slash = path.lastIndexOf("/");
+      if (slash <= 0) return;
+      const dir = path.slice(0, slash);
+      const parts = dir.split("/").filter(Boolean);
+      let cur = "";
+      for (const part of parts) {
+        cur = cur ? `${cur}/${part}` : part;
+        if (!(await adapter.exists(cur))) await adapter.mkdir(cur);
+      }
+    };
+
+    // Linkpaths can repeat in the source; dedupe by Drive path so we only
+    // fetch each Drive file once.
+    const handled = new Set<string>();
+    for (const [linkpath, parts] of resolution) {
+      const key = parts.join("/");
+      if (handled.has(key)) continue;
+      handled.add(key);
+      const child = await this.drive.findChildByPath(project.driveFolderId, parts);
+      if (!child) {
+        result.missing++;
+        continue;
+      }
+      const dl = await this.drive.downloadChildBytes(child);
+      if (!dl) {
+        result.missing++;
+        continue;
+      }
+      const intendedPath = `${local}/${parts.join("/")}`;
+      const existing = this.app.vault.getAbstractFileByPath(intendedPath);
+      if (!(existing instanceof TFile)) {
+        await ensureDir(intendedPath);
+        await this.app.vault.createBinary(intendedPath, dl.data);
+        result.written++;
+        continue;
+      }
+      const localBytes = await adapter.readBinary(existing.path);
+      if (bytesEqual(localBytes, dl.data)) {
+        result.reused++;
+        continue;
+      }
+      // Bytes differ — write under a unique name and rewrite the linkpath.
+      const lastSlash = intendedPath.lastIndexOf("/");
+      const dir = lastSlash > 0 ? intendedPath.slice(0, lastSlash) : "";
+      const baseFull = lastSlash > 0 ? intendedPath.slice(lastSlash + 1) : intendedPath;
+      const dot = baseFull.lastIndexOf(".");
+      const base = dot > 0 ? baseFull.slice(0, dot) : baseFull;
+      const ext = dot > 0 ? baseFull.slice(dot) : "";
+      let n = 2;
+      let candidatePath: string;
+      do {
+        const candidateName = `${base} (Drive ${n})${ext}`;
+        candidatePath = dir ? `${dir}/${candidateName}` : candidateName;
+        n++;
+      } while (this.app.vault.getAbstractFileByPath(candidatePath));
+      await ensureDir(candidatePath);
+      await this.app.vault.createBinary(candidatePath, dl.data);
+      result.written++;
+      result.renamed++;
+      // Build the new linkpath in the same shape as the original.
+      const newLast = candidatePath.split("/").pop()!;
+      if (linkpath.includes("/")) {
+        const lpSlash = linkpath.lastIndexOf("/");
+        renames.set(linkpath, `${linkpath.slice(0, lpSlash)}/${newLast}`);
+      } else {
+        renames.set(linkpath, newLast);
+      }
+    }
+
+    if (renames.size > 0) {
+      result.newText = rewriteEmbedLinkpaths(text, renames);
+    }
+    return result;
   }
 
   /** Read a vault file as UTF-8 text; null if missing or unreadable. */
@@ -5334,6 +5554,7 @@ class DriveVersionPickerModal extends Modal {
       row.onclick = () => {
         this.close();
         void this.plugin.openDriveVersionAsNewNote(
+          this.project,
           this.file,
           driveFileId,
           rev.id,
