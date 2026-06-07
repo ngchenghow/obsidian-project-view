@@ -41,7 +41,7 @@ A project lives as a pane in the left sidebar; clicking it instantly restores th
 - Clicking a note **opens or focuses** it (no duplicate tabs).
 
 ### Context menus
-- **Note** menu: Pin / Unpin, Rename, Upload to Google Drive (linked projects).
+- **Note** menu: Pin / Unpin, Rename, Upload to / Download from Google Drive, Merge with Google Drive on Local, Show Drive versions… (linked projects).
 - **Folder** menu: Rename, Remove from project (keeps the folder in your vault).
 - **Pane** menu: Open folder…, Open note…, Browse… (a folder/file tree of the project), Rename / Delete (named panes).
 
@@ -49,6 +49,8 @@ A project lives as a pane in the left sidebar; clicking it instantly restores th
 - **Create a project from a Drive share link**: in **+ New**, paste a folder link, pick a new or existing folder, and the folder's files/subfolders are downloaded and linked to the project.
 - **Download from / Upload to Google Drive** from the project menu (left pane and right‑pane header).
 - **Upload a single file** from a note's menu.
+- **Merge with Google Drive on Local** (note menu, `.md`/`.txt` only): pulls the Drive copy and additively merges it into the local file — no local lines are deleted, lines unique to Drive are inserted, and when a block conflicts both versions are kept (local first, then Drive) so you can resolve by hand.
+- **Show Drive versions…** (note menu): lists the most recent Drive revisions for the file (newest first, with modified time, size, and a "pinned" tag for `keepForever` revisions). Click one to download that revision and open it as a **new note in the same folder**, named `<basename> (YYYY-MM-DD HH-MM-SS).<ext>` — your current file is untouched. Drive auto‑prunes non‑pinned revisions of binary files (~100 / 30 days), so only the survivors show up.
 - Google‑native files are exported on download: Docs → `.md`, Sheets → `.csv`, Slides → `.pdf`.
 
 > Sync is **one‑way and additive**: download writes/updates files locally (never deletes local files removed on Drive); upload writes/updates files on Drive (never deletes Drive files removed locally).
